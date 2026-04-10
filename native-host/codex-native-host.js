@@ -74,10 +74,11 @@ function runShortCommand(command, args) {
 async function readStatus() {
   const command = resolveCodexCommand();
   const result = await runShortCommand(command, ["login", "status"]);
+  const loginText = [result.stdout, result.stderr].filter(Boolean).join("\n");
   return {
     type: "status_response",
     connected: true,
-    loggedIn: /logged in/i.test(result.stdout),
+    loggedIn: /logged in/i.test(loginText),
     codexPath: command,
     hostVersion: HOST_VERSION,
     error: result.ok ? "" : result.error || result.stderr || ""

@@ -228,6 +228,24 @@
       return fallback;
     }
   }
+  function formatAnthropicSystemForSingleMessage(system) {
+    if (typeof system === "string") {
+      return system.trim();
+    }
+    if (!Array.isArray(system)) {
+      return "";
+    }
+    const parts = [];
+    for (const block of system) {
+      if (!block || typeof block !== "object") {
+        continue;
+      }
+      if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
+        parts.push(block.text.trim());
+      }
+    }
+    return parts.join("\n\n").trim();
+  }
   function stringifyContent(value) {
     if (typeof value === "string") {
       return value;
