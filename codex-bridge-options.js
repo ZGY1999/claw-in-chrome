@@ -1,5 +1,7 @@
 (function () {
   const STORAGE_KEY = "codexBridgeConfig";
+  const BRIDGE_DEBUG_KEY = "codexBridgeDebugLogs";
+  const SIDEPANEL_DEBUG_KEY = "sidepanelDebugLogs";
   const DEFAULTS = {
     enabled: false,
     hostName: "com.zgy1999.codex_bridge",
@@ -72,6 +74,36 @@
     refs.status.dataset.tone = tone || "";
   }
 
+  async function readDebugSnapshot() {
+    const stored = await chrome.storage.local.get([BRIDGE_DEBUG_KEY, SIDEPANEL_DEBUG_KEY]);
+    const bridgeLogs = Array.isArray(stored[BRIDGE_DEBUG_KEY]) ? stored[BRIDGE_DEBUG_KEY] : [];
+    const sidepanelLogs = Array.isArray(stored[SIDEPANEL_DEBUG_KEY]) ? stored[SIDEPANEL_DEBUG_KEY] : [];
+    const filteredSidepanel = sidepanelLogs.filter(function (entry) {
+      const type = String(entry?.type || "");
+      return type.startsWith("local_codex.") || type.startsWith("provider.") || type.startsWith("chat.client_bootstrap");
+    });
+    return {
+      bridgeLogs: bridgeLogs.slice(-80),
+      sidepanelLogs: filteredSidepanel.slice(-120)
+    };
+  }
+
+  function formatDebugSnapshot(snapshot) {
+    return JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      bridgeLogs: snapshot.bridgeLogs || [],
+      sidepanelLogs: snapshot.sidepanelLogs || []
+    }, null, 2);
+  }
+
+  async function refreshDebugOutput() {
+    if (!refs?.debugOutput) {
+      return;
+    }
+    const snapshot = await readDebugSnapshot();
+    refs.debugOutput.textContent = formatDebugSnapshot(snapshot);
+  }
+
   function writeForm(config) {
     refs.toggle.dataset.enabled = config.enabled ? "true" : "false";
     refs.enabledValue.textContent = config.enabled ? "Enabled" : "Disabled";
@@ -119,6 +151,7 @@
       parts.push(status.error);
     }
     setStatus(parts.join(" | "), status.connected ? "success" : status.error ? "error" : "");
+    await refreshDebugOutput().catch(function () {});
   }
 
   async function saveForm() {
@@ -232,6 +265,12 @@
     const status = createNode("div", "cb-status-text", "Not checked yet.");
     statusRow.appendChild(status);
 
+    const debugShell = createNode("div", "cb-output-shell");
+    debugShell.appendChild(createNode("p", "cb-output-title", "Local Codex debug logs"));
+    const debugOutput = createNode("pre", "cb-output", "");
+    debugOutput.textContent = "No debug logs yet.";
+    debugShell.appendChild(debugOutput);
+
     const actions = createNode("div", "cb-actions");
     const closeButton = createNode("button", "cb-btn", "Close");
     closeButton.addEventListener("click", function () {
@@ -243,6 +282,22 @@
         setStatus(error && typeof error.message === "string" ? error.message : "Failed to refresh bridge status.", "error");
       });
     });
+    const refreshLogsButton = createNode("button", "cb-btn", "Refresh logs");
+    refreshLogsButton.addEventListener("click", function () {
+      refreshDebugOutput().catch(function (error) {
+        setStatus(error && typeof error.message === "string" ? error.message : "Failed to refresh debug logs.", "error");
+      });
+    });
+    const copyLogsButton = createNode("button", "cb-btn", "Copy logs");
+    copyLogsButton.addEventListener("click", function () {
+      Promise.resolve(readDebugSnapshot()).then(function (snapshot) {
+        return navigator.clipboard.writeText(formatDebugSnapshot(snapshot));
+      }).then(function () {
+        setStatus("Copied Local Codex debug logs.", "success");
+      }).catch(function (error) {
+        setStatus(error && typeof error.message === "string" ? error.message : "Failed to copy debug logs.", "error");
+      });
+    });
     const saveButton = createNode("button", "cb-btn cb-btn-primary", "Save");
     saveButton.addEventListener("click", function () {
       saveForm().catch(function (error) {
@@ -251,6 +306,8 @@
     });
     actions.appendChild(closeButton);
     actions.appendChild(checkButton);
+    actions.appendChild(refreshLogsButton);
+    actions.appendChild(copyLogsButton);
     actions.appendChild(saveButton);
 
     grid.appendChild(toggleRow);
@@ -261,6 +318,7 @@
     grid.appendChild(ephemeralRow);
     grid.appendChild(ephemeralValue);
     grid.appendChild(statusRow);
+    grid.appendChild(debugShell);
     grid.appendChild(actions);
 
     body.appendChild(grid);
@@ -278,6 +336,7 @@
       ephemeral,
       ephemeralValue,
       status,
+      debugOutput,
       launcher
     };
     overlay = modal;

@@ -11,6 +11,8 @@ const CODEX_BRIDGE_TASK_EVENT = "CODEX_BRIDGE_TASK_EVENT";
 const CODEX_BRIDGE_TASK_LOG = "CODEX_BRIDGE_TASK_LOG";
 const CODEX_BRIDGE_TASK_DONE = "CODEX_BRIDGE_TASK_DONE";
 const CODEX_BRIDGE_STATUS_CHANGED = "CODEX_BRIDGE_STATUS_CHANGED";
+const CODEX_BRIDGE_DEBUG_LOGS_KEY = "codexBridgeDebugLogs";
+const CODEX_BRIDGE_DEBUG_LIMIT = 300;
 
 let codexPort = null;
 let codexHostName = "";
@@ -18,6 +20,46 @@ let codexConnectInFlight = null;
 let codexStatusWaiters = [];
 let codexConnected = false;
 let codexLastError = "";
+
+function normalizeBridgeDebugPayload(payload) {
+  if (payload == null) {
+    return payload;
+  }
+  if (typeof payload === "string" || typeof payload === "number" || typeof payload === "boolean") {
+    return payload;
+  }
+  if (Array.isArray(payload)) {
+    return payload.slice(0, 20).map(normalizeBridgeDebugPayload);
+  }
+  if (typeof payload !== "object") {
+    return String(payload);
+  }
+  const output = {};
+  for (const [key, value] of Object.entries(payload).slice(0, 30)) {
+    if (typeof value === "string" && value.length > 600) {
+      output[key] = value.slice(0, 600) + "...[truncated]";
+    } else {
+      output[key] = normalizeBridgeDebugPayload(value);
+    }
+  }
+  return output;
+}
+
+async function appendCodexBridgeDebug(type, payload, level) {
+  try {
+    const stored = await chrome.storage.local.get(CODEX_BRIDGE_DEBUG_LOGS_KEY);
+    const current = Array.isArray(stored[CODEX_BRIDGE_DEBUG_LOGS_KEY]) ? stored[CODEX_BRIDGE_DEBUG_LOGS_KEY] : [];
+    current.push({
+      ts: new Date().toISOString(),
+      type,
+      level: level || "info",
+      payload: normalizeBridgeDebugPayload(payload)
+    });
+    await chrome.storage.local.set({
+      [CODEX_BRIDGE_DEBUG_LOGS_KEY]: current.slice(-CODEX_BRIDGE_DEBUG_LIMIT)
+    });
+  } catch {}
+}
 
 async function readCodexBridgeConfig() {
   const stored = await chrome.storage.local.get(CODEX_BRIDGE_CONFIG_KEY);
@@ -73,6 +115,10 @@ function handleCodexBridgePortDisconnect() {
   codexConnected = false;
   const message = chrome.runtime.lastError?.message || "Codex bridge disconnected.";
   codexLastError = message;
+  appendCodexBridgeDebug("bridge.disconnect", {
+    hostName: codexHostName,
+    error: message
+  }, "warn");
   flushCodexStatusWaiters(resolveCodexBridgeStatus());
   updateCodexBridgeStatus();
 }
@@ -84,6 +130,9 @@ function handleCodexBridgePortMessage(message) {
   if (message.type === "pong") {
     codexConnected = true;
     codexLastError = "";
+    appendCodexBridgeDebug("bridge.pong", {
+      hostName: codexHostName
+    });
     updateCodexBridgeStatus();
     return;
   }
@@ -95,10 +144,16 @@ function handleCodexBridgePortMessage(message) {
       codexPath: String(message.codexPath || ""),
       hostVersion: String(message.hostVersion || "")
     });
+    appendCodexBridgeDebug("bridge.status_response", status);
     flushCodexStatusWaiters(status);
     return;
   }
   if (message.type === "task_event") {
+    appendCodexBridgeDebug("bridge.task_event", {
+      taskId: String(message.taskId || ""),
+      eventType: String(message.event?.type || ""),
+      itemType: String(message.event?.item?.type || "")
+    });
     broadcastCodexBridgeMessage({
       type: CODEX_BRIDGE_TASK_EVENT,
       taskId: String(message.taskId || ""),
@@ -107,6 +162,11 @@ function handleCodexBridgePortMessage(message) {
     return;
   }
   if (message.type === "task_log") {
+    appendCodexBridgeDebug("bridge.task_log", {
+      taskId: String(message.taskId || ""),
+      stream: String(message.stream || "stdout"),
+      text: String(message.text || "")
+    }, message.stream === "stderr" ? "warn" : "info");
     broadcastCodexBridgeMessage({
       type: CODEX_BRIDGE_TASK_LOG,
       taskId: String(message.taskId || ""),
@@ -116,6 +176,13 @@ function handleCodexBridgePortMessage(message) {
     return;
   }
   if (message.type === "task_done" || message.type === "task_error") {
+    appendCodexBridgeDebug("bridge.task_done", {
+      taskId: String(message.taskId || ""),
+      success: message.type === "task_done" && Number(message.exitCode || 0) === 0,
+      exitCode: Number(message.exitCode || 0),
+      error: String(message.error || ""),
+      summaryLength: String(message.summary || "").length
+    }, message.type === "task_error" ? "error" : "info");
     broadcastCodexBridgeMessage({
       type: CODEX_BRIDGE_TASK_DONE,
       taskId: String(message.taskId || ""),
@@ -137,11 +204,19 @@ async function connectCodexBridge(forceReconnect) {
   codexConnectInFlight = (async () => {
     const config = await readCodexBridgeConfig();
     codexHostName = config.hostName;
+    appendCodexBridgeDebug("bridge.connect_attempt", {
+      forceReconnect: !!forceReconnect,
+      hostName: config.hostName,
+      enabled: !!config.enabled
+    });
     if (!(await chrome.permissions.contains({
       permissions: ["nativeMessaging"]
     }))) {
       codexConnected = false;
       codexLastError = "nativeMessaging permission is not available.";
+      appendCodexBridgeDebug("bridge.connect_failed", {
+        reason: codexLastError
+      }, "error");
       updateCodexBridgeStatus();
       return false;
     }
@@ -160,11 +235,18 @@ async function connectCodexBridge(forceReconnect) {
       port.postMessage({
         type: "ping"
       });
+      appendCodexBridgeDebug("bridge.connect_success", {
+        hostName: config.hostName
+      });
       return true;
     } catch (error) {
       codexPort = null;
       codexConnected = false;
       codexLastError = error instanceof Error ? error.message : String(error || "Failed to connect to Codex bridge.");
+      appendCodexBridgeDebug("bridge.connect_failed", {
+        hostName: config.hostName,
+        error: codexLastError
+      }, "error");
       updateCodexBridgeStatus();
       return false;
     } finally {
@@ -175,6 +257,7 @@ async function connectCodexBridge(forceReconnect) {
 }
 
 async function requestCodexBridgeStatus() {
+  appendCodexBridgeDebug("bridge.status_request", {});
   if (!(await connectCodexBridge(false)) || !codexPort) {
     return resolveCodexBridgeStatus();
   }
@@ -236,6 +319,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       const payload = normalizeCodexBridgeTaskRequest(message, config);
+      appendCodexBridgeDebug("bridge.start_task_request", {
+        taskId: payload.taskId,
+        promptLength: payload.prompt.length,
+        cwd: payload.cwd,
+        model: payload.model,
+        sandbox: payload.sandbox,
+        senderUrl: String(sender?.url || "")
+      });
       if (!payload.prompt) {
         sendResponse({
           success: false,
@@ -255,6 +346,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           type: "start_task",
           ...payload
         });
+        appendCodexBridgeDebug("bridge.start_task_dispatched", {
+          taskId: payload.taskId
+        });
         sendResponse({
           success: true,
           taskId: payload.taskId
@@ -268,6 +362,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "CODEX_BRIDGE_CANCEL_TASK") {
+      appendCodexBridgeDebug("bridge.cancel_task_request", {
+        taskId: String(message.taskId || "")
+      }, "warn");
       if (!codexPort) {
         sendResponse({
           success: false,

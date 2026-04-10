@@ -11,6 +11,7 @@
   const CODEX_BRIDGE_CONFIG_KEY = "codexBridgeConfig";
   const TOOL_CALL_OPEN_TAG = "<tool_call>";
   const TOOL_CALL_CLOSE_TAG = "</tool_call>";
+  const localCodexHelpers = globalThis.LocalCodexAdapterHelpers || {};
   if (globalThis[PATCH_FLAG]) {
     return;
   }
@@ -228,7 +229,7 @@
       return fallback;
     }
   }
-  function formatAnthropicSystemForSingleMessage(system) {
+  const formatAnthropicSystemForSingleMessage = typeof localCodexHelpers.formatAnthropicSystemForSingleMessage === "function" ? localCodexHelpers.formatAnthropicSystemForSingleMessage : function (system) {
     if (typeof system === "string") {
       return system.trim();
     }
@@ -245,7 +246,7 @@
       }
     }
     return parts.join("\n\n").trim();
-  }
+  };
   function stringifyContent(value) {
     if (typeof value === "string") {
       return value;
@@ -1726,35 +1727,25 @@
     return segments.join("\n\n");
   }
   function parseLocalCodexToolCall(text) {
-    const rawText = typeof text === "string" ? text.trim() : "";
-    if (!rawText) {
-      return null;
-    }
-    const match = rawText.match(new RegExp(TOOL_CALL_OPEN_TAG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*([\\s\\S]+?)\\s*" + TOOL_CALL_CLOSE_TAG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
-    if (!match) {
-      return null;
-    }
-    const parsed = safeJsonParse(match[1], null);
-    if (!parsed || typeof parsed !== "object") {
-      return null;
-    }
-    const name = typeof parsed.name === "string" && parsed.name ? parsed.name : typeof parsed?.function?.name === "string" ? parsed.function.name : "";
-    let input = parsed.arguments != null ? parsed.arguments : parsed.input;
-    if (typeof input === "string") {
-      input = safeJsonParse(input, input);
-    }
-    if (!name) {
+    const parsed = typeof localCodexHelpers.parseLocalCodexToolCall === "function" ? localCodexHelpers.parseLocalCodexToolCall(text) : null;
+    if (!parsed) {
       return null;
     }
     return {
       type: "tool_use",
       id: "toolu_local_" + Date.now().toString(36),
-      name,
-      input: input && typeof input === "object" ? input : {}
+      name: parsed.name,
+      input: parsed.input
     };
   }
   function buildAnthropicResponseFromLocalCodex(text, model) {
     const toolUse = parseLocalCodexToolCall(text);
+    debugLog("local_codex.response_built", {
+      model: String(model || ""),
+      hasToolUse: !!toolUse,
+      outputTextLength: typeof text === "string" ? text.length : 0,
+      toolName: toolUse?.name || ""
+    });
     return {
       id: "msg_local_codex_" + Date.now().toString(36),
       type: "message",
@@ -1778,6 +1769,9 @@
       async start(controller) {
         const output = [];
         try {
+          debugLog("local_codex.stream_start", {
+            model: String(model || "")
+          });
           const text = await taskPromise;
           const response = buildAnthropicResponseFromLocalCodex(text, model);
           output.push(sseChunk("message_start", {
@@ -1847,8 +1841,17 @@
           for (const chunkText of output) {
             controller.enqueue(encoder.encode(chunkText));
           }
+          debugLog("local_codex.stream_complete", {
+            model: String(model || ""),
+            chunkCount: output.length,
+            hasToolUse: response.stop_reason === "tool_use"
+          });
           controller.close();
         } catch (error) {
+          debugLog("local_codex.stream_error", {
+            model: String(model || ""),
+            error: error && typeof error.message === "string" ? error.message : String(error || "")
+          }, "error");
           controller.enqueue(encoder.encode(sseChunk("error", {
             type: "error",
             error: {
@@ -1865,6 +1868,16 @@
     const bridgeConfig = await readCodexBridgeConfig();
     const taskId = createLocalCodexTaskId();
     const prompt = buildLocalCodexPrompt(body, config);
+    debugLog("local_codex.request_start", {
+      taskId,
+      model: String(config?.defaultModel || body?.model || bridgeConfig.defaultModel || ""),
+      stream: !!body?.stream,
+      messageCount: Array.isArray(body?.messages) ? body.messages.length : 0,
+      toolCount: Array.isArray(body?.tools) ? body.tools.length : 0,
+      promptLength: prompt.length,
+      cwd: String(bridgeConfig.defaultCwd || ""),
+      sandbox: String(bridgeConfig.sandbox || "workspace-write")
+    });
     return new Promise(async (resolve, reject) => {
       let lastText = "";
       let cleanedUp = false;
@@ -1874,12 +1887,25 @@
         }
         if (message.type === "CODEX_BRIDGE_TASK_EVENT") {
           const event = message.event || {};
+          debugLog("local_codex.task_event", {
+            taskId,
+            eventType: String(event.type || ""),
+            itemType: String(event.item?.type || "")
+          });
           if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") {
             lastText = event.item.text;
           }
           return;
         }
         if (message.type === "CODEX_BRIDGE_TASK_DONE") {
+          debugLog("local_codex.task_done", {
+            taskId,
+            success: !!message.success,
+            exitCode: Number(message.exitCode || 0),
+            error: String(message.error || ""),
+            summaryLength: String(message.summary || "").length,
+            lastTextLength: lastText.length
+          }, message.error && !lastText ? "error" : "info");
           cleanup();
           if (message.error && !lastText) {
             reject(new Error(String(message.error || "Local Codex task failed.")));
@@ -1901,6 +1927,9 @@
         }
       };
       const onAbort = function () {
+        debugLog("local_codex.request_aborted", {
+          taskId
+        }, "warn");
         sendCodexBridgeMessage({
           type: "CODEX_BRIDGE_CANCEL_TASK",
           taskId
@@ -1924,11 +1953,20 @@
           sandbox: String(bridgeConfig.sandbox || "workspace-write").trim() || "workspace-write",
           ephemeral: bridgeConfig.ephemeral !== false
         });
+        debugLog("local_codex.bridge_ack", {
+          taskId,
+          success: !!response?.success,
+          error: String(response?.error || "")
+        }, response?.success ? "info" : "error");
         if (!response?.success) {
           cleanup();
           reject(new Error(response?.error || "Failed to start Local Codex task."));
         }
       } catch (error) {
+        debugLog("local_codex.bridge_error", {
+          taskId,
+          error: error && typeof error.message === "string" ? error.message : String(error || "")
+        }, "error");
         cleanup();
         reject(error);
       }
@@ -2121,6 +2159,11 @@
       return createAnthropicErrorResponse(400, "自定义供应商只支持 JSON 请求体。");
     }
     if (config.format === LOCAL_CODEX_FORMAT) {
+      debugLog("local_codex.forward_request", {
+        stream: !!body.stream,
+        model: String(body.model || config.defaultModel || ""),
+        messageCount: Array.isArray(body.messages) ? body.messages.length : 0
+      });
       const taskPromise = runLocalCodexTaskFromAnthropicBody(body, config, request.signal);
       if (body.stream) {
         return createSseResponse(new Response(null, {

@@ -1,3 +1,4 @@
+import "./local-codex-adapter-helpers.js";
 import "./provider-format-adapter.js";
 import "./assets/service-worker.ts-H0DVM1LS.js";
 import "./codex-bridge-worker.js";
