@@ -18,6 +18,22 @@
   const FETCHED_MODELS_CACHE_LIMIT = 24;
   const HEALTH_CHECK_PROMPT = "Reply with OK only.";
   const HEALTH_CHECK_MAX_TOKENS = 64;
+  const localCodexHelpers = globalThis.LocalCodexAdapterHelpers || {};
+  const MANAGED_LOCAL_CODEX_PROFILE_ID = localCodexHelpers.MANAGED_LOCAL_CODEX_PROFILE_ID || "__managed_local_codex__";
+  const isManagedLocalCodexProfile = typeof localCodexHelpers.isManagedLocalCodexProfile === "function" ? localCodexHelpers.isManagedLocalCodexProfile : function (profile) {
+    return String(profile?.id || "").trim() === MANAGED_LOCAL_CODEX_PROFILE_ID;
+  };
+  const upsertManagedLocalCodexProfile = typeof localCodexHelpers.upsertManagedLocalCodexProfile === "function" ? localCodexHelpers.upsertManagedLocalCodexProfile : function (profiles, profile) {
+    return removeManagedLocalCodexProfiles(profiles).concat({
+      ...profile,
+      id: MANAGED_LOCAL_CODEX_PROFILE_ID
+    });
+  };
+  const removeManagedLocalCodexProfiles = typeof localCodexHelpers.removeManagedLocalCodexProfiles === "function" ? localCodexHelpers.removeManagedLocalCodexProfiles : function (profiles) {
+    return Array.isArray(profiles) ? profiles.filter(function (profile) {
+      return !isManagedLocalCodexProfile(profile);
+    }) : [];
+  };
   function normalizeFormat(value) {
     const format = String(value || "").trim().toLowerCase();
     if (!format || format === ANTHROPIC_FORMAT) {
@@ -397,6 +413,22 @@
       activeProfileId = profiles[0].id;
       migrated = true;
     }
+    const managedProfiles = profiles.filter(isManagedLocalCodexProfile);
+    if (managedProfiles.length) {
+      const canonicalManagedProfile = normalizeProfile({
+        ...managedProfiles[managedProfiles.length - 1],
+        id: MANAGED_LOCAL_CODEX_PROFILE_ID
+      });
+      profiles = upsertManagedLocalCodexProfile(profiles, canonicalManagedProfile);
+      if (managedProfiles.some(function (profile) {
+        return profile.id === activeProfileId;
+      })) {
+        activeProfileId = MANAGED_LOCAL_CODEX_PROFILE_ID;
+      }
+      if (managedProfiles.length > 1 || managedProfiles[0]?.id !== MANAGED_LOCAL_CODEX_PROFILE_ID) {
+        migrated = true;
+      }
+    }
     const activeProfile = profiles.find(function (profile) {
       return profile.id === activeProfileId;
     }) || null;
@@ -473,17 +505,34 @@
     const currentState = settings.state || await readProviderStoreState({
       storageArea: settings.storageArea
     });
+    const deletedProfile = currentState.profiles.find(function (profile) {
+      return profile.id === profileId;
+    }) || null;
     const profiles = currentState.profiles.filter(function (profile) {
       return profile.id !== profileId;
     });
     const activeProfileId = currentState.activeProfileId === profileId ? profiles[0]?.id || null : resolveActiveProfileId(profiles, currentState.activeProfileId);
-    return persistProviderStoreState({
+    const nextState = await persistProviderStoreState({
       storageArea: settings.storageArea,
       profiles,
       activeProfileId,
       originalApiKey: currentState.originalApiKey,
       currentApiKey: currentState.currentApiKey
     });
+    if (isManagedLocalCodexProfile(deletedProfile)) {
+      const storage = settings.storageArea || globalThis.chrome?.storage?.local;
+      if (storage) {
+        const stored = await storage.get(CODEX_BRIDGE_CONFIG_KEY);
+        const currentBridgeConfig = stored?.[CODEX_BRIDGE_CONFIG_KEY] && typeof stored[CODEX_BRIDGE_CONFIG_KEY] === "object" ? stored[CODEX_BRIDGE_CONFIG_KEY] : {};
+        await storage.set({
+          [CODEX_BRIDGE_CONFIG_KEY]: {
+            ...currentBridgeConfig,
+            enabled: false
+          }
+        });
+      }
+    }
+    return nextState;
   }
   async function parseJsonSafe(response) {
     const text = await response.text();
@@ -929,6 +978,7 @@
     LEGACY_STORAGE_KEY,
     PROFILES_STORAGE_KEY,
     ACTIVE_PROFILE_STORAGE_KEY,
+    MANAGED_LOCAL_CODEX_PROFILE_ID,
     BACKUP_KEY,
     ANTHROPIC_API_KEY_STORAGE_KEY,
     FETCHED_MODELS_CACHE_KEY,
@@ -941,6 +991,7 @@
     createEmptyConfig,
     hasUsableConfig,
     projectProfileToConfig,
+    persistProviderStoreState,
     readProviderStoreState,
     saveProviderProfile,
     setActiveProviderProfile,

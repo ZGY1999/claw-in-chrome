@@ -11,6 +11,25 @@
     ephemeral: true
   };
   const ROOT_ID = "cb-options-root";
+  const localCodexHelpers = globalThis.LocalCodexAdapterHelpers || {};
+  const MANAGED_LOCAL_CODEX_PROFILE_ID = localCodexHelpers.MANAGED_LOCAL_CODEX_PROFILE_ID || "__managed_local_codex__";
+  const isManagedLocalCodexProfile = typeof localCodexHelpers.isManagedLocalCodexProfile === "function" ? localCodexHelpers.isManagedLocalCodexProfile : function (profile) {
+    return String(profile?.id || "").trim() === MANAGED_LOCAL_CODEX_PROFILE_ID;
+  };
+  const upsertManagedLocalCodexProfile = typeof localCodexHelpers.upsertManagedLocalCodexProfile === "function" ? localCodexHelpers.upsertManagedLocalCodexProfile : function (profiles, profile) {
+    const filtered = Array.isArray(profiles) ? profiles.filter(function (entry) {
+      return !isManagedLocalCodexProfile(entry);
+    }) : [];
+    return filtered.concat({
+      ...profile,
+      id: MANAGED_LOCAL_CODEX_PROFILE_ID
+    });
+  };
+  const removeManagedLocalCodexProfiles = typeof localCodexHelpers.removeManagedLocalCodexProfiles === "function" ? localCodexHelpers.removeManagedLocalCodexProfiles : function (profiles) {
+    return Array.isArray(profiles) ? profiles.filter(function (entry) {
+      return !isManagedLocalCodexProfile(entry);
+    }) : [];
+  };
   let overlay = null;
   let refs = null;
 
@@ -47,7 +66,26 @@
   async function syncCustomProvider(next) {
     const helpers = globalThis.CustomProviderModels;
     const defaultModel = String(next.defaultModel || "").trim() || "gpt-5.4";
-    const profile = {
+    if (!helpers || typeof helpers.readProviderStoreState !== "function" || typeof helpers.persistProviderStoreState !== "function") {
+      if (next.enabled) {
+        await chrome.storage.local.set({
+          customProviderConfig: {
+            name: "Local Codex",
+            format: "local_codex",
+            baseUrl: "https://local.codex",
+            apiKey: "local-codex",
+            defaultModel,
+            reasoningEffort: "medium",
+            contextWindow: helpers?.DEFAULT_CONTEXT_WINDOW || 200000,
+            notes: "Managed by Local Codex settings."
+          }
+        });
+      }
+      return;
+    }
+    const currentState = await helpers.readProviderStoreState();
+    const managedProfile = {
+      id: MANAGED_LOCAL_CODEX_PROFILE_ID,
       name: "Local Codex",
       format: "local_codex",
       baseUrl: "https://local.codex",
@@ -57,13 +95,25 @@
       contextWindow: helpers?.DEFAULT_CONTEXT_WINDOW || 200000,
       notes: "Managed by Local Codex settings."
     };
-    if (helpers && typeof helpers.saveProviderProfile === "function") {
-      await helpers.saveProviderProfile(profile);
+    const existingManagedProfile = currentState.profiles.find(isManagedLocalCodexProfile) || null;
+    const filteredProfiles = next.enabled ? upsertManagedLocalCodexProfile(currentState.profiles, managedProfile) : removeManagedLocalCodexProfiles(currentState.profiles);
+    const shouldKeepManagedActive = next.enabled && (!currentState.activeProfileId || currentState.activeProfileId === existingManagedProfile?.id || isManagedLocalCodexProfile(currentState.activeProfile));
+    const nextActiveProfileId = shouldKeepManagedActive ? MANAGED_LOCAL_CODEX_PROFILE_ID : currentState.activeProfileId === existingManagedProfile?.id ? filteredProfiles[0]?.id || null : currentState.activeProfileId;
+    await helpers.persistProviderStoreState({
+      profiles: filteredProfiles,
+      activeProfileId: nextActiveProfileId,
+      originalApiKey: currentState.originalApiKey,
+      currentApiKey: currentState.currentApiKey
+    });
+    if (!next.enabled && existingManagedProfile) {
+      await chrome.storage.local.set({
+        [STORAGE_KEY]: {
+          ...next,
+          enabled: false
+        }
+      });
       return;
     }
-    await chrome.storage.local.set({
-      customProviderConfig: profile
-    });
   }
 
   function setStatus(message, tone) {
@@ -157,9 +207,7 @@
   async function saveForm() {
     const next = readForm();
     await writeConfig(next);
-    if (next.enabled) {
-      await syncCustomProvider(next);
-    }
+    await syncCustomProvider(next);
     setStatus("Saved. Reloading local bridge status...", "success");
     await refreshStatus();
   }

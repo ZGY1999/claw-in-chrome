@@ -12,6 +12,12 @@
   const TOOL_CALL_OPEN_TAG = "<tool_call>";
   const TOOL_CALL_CLOSE_TAG = "</tool_call>";
   const localCodexHelpers = globalThis.LocalCodexAdapterHelpers || {};
+  const extractLocalCodexEventText = typeof localCodexHelpers.extractLocalCodexEventText === "function" ? localCodexHelpers.extractLocalCodexEventText : function (event) {
+    return typeof event?.item?.text === "string" ? event.item.text.trim() : "";
+  };
+  const extractLocalCodexEventError = typeof localCodexHelpers.extractLocalCodexEventError === "function" ? localCodexHelpers.extractLocalCodexEventError : function (event) {
+    return typeof event?.message === "string" ? event.message.trim() : "";
+  };
   if (globalThis[PATCH_FLAG]) {
     return;
   }
@@ -1880,6 +1886,7 @@
     });
     return new Promise(async (resolve, reject) => {
       let lastText = "";
+      let lastError = "";
       let cleanedUp = false;
       const onMessage = function (message) {
         if (!message || message.taskId !== taskId) {
@@ -1890,10 +1897,16 @@
           debugLog("local_codex.task_event", {
             taskId,
             eventType: String(event.type || ""),
-            itemType: String(event.item?.type || "")
+            itemType: String(event.item?.type || ""),
+            error: extractLocalCodexEventError(event)
           });
-          if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") {
-            lastText = event.item.text;
+          const nextText = extractLocalCodexEventText(event);
+          const nextError = extractLocalCodexEventError(event);
+          if (nextText) {
+            lastText = nextText;
+          }
+          if (nextError) {
+            lastError = nextError;
           }
           return;
         }
@@ -1902,16 +1915,27 @@
             taskId,
             success: !!message.success,
             exitCode: Number(message.exitCode || 0),
-            error: String(message.error || ""),
+            error: String(message.error || lastError || ""),
             summaryLength: String(message.summary || "").length,
             lastTextLength: lastText.length
-          }, message.error && !lastText ? "error" : "info");
+          }, message.error || lastError || Number(message.exitCode || 0) !== 0 ? "error" : "info");
           cleanup();
-          if (message.error && !lastText) {
-            reject(new Error(String(message.error || "Local Codex task failed.")));
+          const terminalError = String(message.error || lastError || "");
+          const exitCode = Number(message.exitCode || 0);
+          if (terminalError) {
+            reject(new Error(terminalError));
             return;
           }
-          resolve(String(lastText || message.summary || "").trim());
+          if (exitCode !== 0) {
+            reject(new Error(`Local Codex task failed with exit code ${exitCode}.`));
+            return;
+          }
+          const finalText = String(lastText || message.summary || "").trim();
+          if (!finalText) {
+            reject(new Error("Local Codex returned no assistant content."));
+            return;
+          }
+          resolve(finalText);
         }
       };
       const cleanup = function () {

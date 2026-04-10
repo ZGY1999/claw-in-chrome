@@ -1,6 +1,11 @@
 (function (root) {
   const TOOL_CALL_OPEN_TAG = "<tool_call>";
   const TOOL_CALL_CLOSE_TAG = "</tool_call>";
+  const MANAGED_LOCAL_CODEX_PROFILE_ID = "__managed_local_codex__";
+
+  function normalizeText(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
 
   function formatAnthropicSystemForSingleMessage(system) {
     if (typeof system === "string") {
@@ -60,11 +65,96 @@
     };
   }
 
+  function isManagedLocalCodexProfile(profile) {
+    if (!profile || typeof profile !== "object") {
+      return false;
+    }
+    if (String(profile.id || "").trim() === MANAGED_LOCAL_CODEX_PROFILE_ID) {
+      return true;
+    }
+    const format = normalizeText(profile.format).toLowerCase();
+    const name = normalizeText(profile.name).toLowerCase();
+    const baseUrl = normalizeText(profile.baseUrl).replace(/\/+$/, "").toLowerCase();
+    return format === "local_codex" && name === "local codex" && baseUrl === "https://local.codex";
+  }
+
+  function removeManagedLocalCodexProfiles(profiles) {
+    return Array.isArray(profiles) ? profiles.filter(function (profile) {
+      return !isManagedLocalCodexProfile(profile);
+    }) : [];
+  }
+
+  function upsertManagedLocalCodexProfile(profiles, profile) {
+    const nextProfile = profile && typeof profile === "object" ? {
+      ...profile,
+      id: MANAGED_LOCAL_CODEX_PROFILE_ID
+    } : {
+      id: MANAGED_LOCAL_CODEX_PROFILE_ID
+    };
+    return removeManagedLocalCodexProfiles(profiles).concat(nextProfile);
+  }
+
+  function extractTextFromContentParts(parts) {
+    if (!Array.isArray(parts)) {
+      return "";
+    }
+    const texts = [];
+    for (const part of parts) {
+      if (!part || typeof part !== "object") {
+        continue;
+      }
+      const text = normalizeText(part.text ?? part.content ?? "");
+      if (text) {
+        texts.push(text);
+      }
+    }
+    return texts.join("\n\n").trim();
+  }
+
+  function extractLocalCodexEventText(event) {
+    if (!event || typeof event !== "object") {
+      return "";
+    }
+    const directText = normalizeText(event.text);
+    if (directText) {
+      return directText;
+    }
+    const item = event.item && typeof event.item === "object" ? event.item : null;
+    const itemText = normalizeText(item?.text);
+    if (itemText) {
+      return itemText;
+    }
+    const contentText = extractTextFromContentParts(item?.content);
+    if (contentText) {
+      return contentText;
+    }
+    return "";
+  }
+
+  function extractLocalCodexEventError(event) {
+    if (!event || typeof event !== "object") {
+      return "";
+    }
+    if (event.type === "error") {
+      return normalizeText(event.message || event.error?.message || event.error);
+    }
+    if (event.type === "turn.failed" || event.type === "item.failed") {
+      return normalizeText(event.error?.message || event.message || event.error);
+    }
+    return "";
+  }
+
   const helpers = {
     TOOL_CALL_OPEN_TAG,
     TOOL_CALL_CLOSE_TAG,
+    MANAGED_LOCAL_CODEX_PROFILE_ID,
     formatAnthropicSystemForSingleMessage,
-    parseLocalCodexToolCall
+    parseLocalCodexToolCall,
+    isManagedLocalCodexProfile,
+    removeManagedLocalCodexProfiles,
+    upsertManagedLocalCodexProfile,
+    extractLocalCodexEventText,
+    extractLocalCodexEventError
   };
 
   root.LocalCodexAdapterHelpers = helpers;

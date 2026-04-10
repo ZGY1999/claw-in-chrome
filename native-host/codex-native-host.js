@@ -4,6 +4,7 @@
 const { spawn } = require("node:child_process");
 const os = require("node:os");
 const path = require("node:path");
+const localCodexHelpers = require("../local-codex-adapter-helpers.js");
 
 const HOST_VERSION = "0.1.0";
 const tasks = new Map();
@@ -86,13 +87,11 @@ async function readStatus() {
 }
 
 function summarizeTaskLine(event) {
-  if (!event || typeof event !== "object") {
-    return "";
-  }
-  if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") {
-    return event.item.text.trim();
-  }
-  return "";
+  return typeof localCodexHelpers.extractLocalCodexEventText === "function" ? localCodexHelpers.extractLocalCodexEventText(event) : "";
+}
+
+function extractTaskError(event) {
+  return typeof localCodexHelpers.extractLocalCodexEventError === "function" ? localCodexHelpers.extractLocalCodexEventError(event) : "";
 }
 
 function streamLines(stream, onLine) {
@@ -157,6 +156,7 @@ function startTask(message) {
 
   const child = spawn(command, args, createSpawnOptions(cwd));
   const summaryParts = [];
+  let taskError = "";
   tasks.set(taskId, child);
 
   child.on("error", error => {
@@ -175,8 +175,12 @@ function startTask(message) {
     try {
       const event = JSON.parse(line);
       const summaryText = summarizeTaskLine(event);
+      const errorText = extractTaskError(event);
       if (summaryText) {
         summaryParts.push(summaryText);
+      }
+      if (errorText) {
+        taskError = errorText;
       }
       sendMessage({
         type: "task_event",
@@ -206,10 +210,12 @@ function startTask(message) {
   });
 
   child.on("close", code => {
+    const exitCode = Number(code || 0);
     sendMessage({
       type: "task_done",
       taskId,
-      exitCode: Number(code || 0),
+      exitCode,
+      error: taskError || (exitCode !== 0 ? `Codex task failed with exit code ${exitCode}.` : ""),
       summary: summaryParts.filter(Boolean).join("\n\n")
     });
     tasks.delete(taskId);
