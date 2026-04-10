@@ -1,0 +1,9 @@
+{
+  "name": "com.zgy1999.codex_bridge",
+  "description": "Local Codex bridge for Claw in Chrome",
+  "path": "C:\\PATH\\TO\\claw-in-chrome\\native-host\\codex-native-host.cmd",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}
