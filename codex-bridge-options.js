@@ -42,6 +42,28 @@
     });
   }
 
+  async function syncCustomProvider(next) {
+    const helpers = globalThis.CustomProviderModels;
+    const defaultModel = String(next.defaultModel || "").trim() || "gpt-5.4";
+    const profile = {
+      name: "Local Codex",
+      format: "local_codex",
+      baseUrl: "https://local.codex",
+      apiKey: "local-codex",
+      defaultModel,
+      reasoningEffort: "medium",
+      contextWindow: helpers?.DEFAULT_CONTEXT_WINDOW || 200000,
+      notes: "Managed by Local Codex settings."
+    };
+    if (helpers && typeof helpers.saveProviderProfile === "function") {
+      await helpers.saveProviderProfile(profile);
+      return;
+    }
+    await chrome.storage.local.set({
+      customProviderConfig: profile
+    });
+  }
+
   function setStatus(message, tone) {
     if (!refs) {
       return;
@@ -102,6 +124,9 @@
   async function saveForm() {
     const next = readForm();
     await writeConfig(next);
+    if (next.enabled) {
+      await syncCustomProvider(next);
+    }
     setStatus("Saved. Reloading local bridge status...", "success");
     await refreshStatus();
   }

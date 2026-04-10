@@ -87659,7 +87659,7 @@ function CQ({
       const r = !!P?.enabled && !!P?.baseUrl;
       const __cpCustomProviderFormat = __cpNormalizeProviderFormat(P?.format, P?.baseUrl);
       const o = r ? __cpNormalizeAnthropicClientBaseUrl(__cpCustomProviderFormat, P.baseUrl) : he.apiBaseUrl;
-      const a = r ? P.apiKey || e : e;
+      const a = r ? P.apiKey || (__cpCustomProviderFormat === "local_codex" ? "local-codex" : e) : e;
       __cpPanelDebugLog("chat.client_bootstrap", {
         sessionId: s,
         tabId: c,
@@ -90556,6 +90556,9 @@ async function __cpReadCurrentProviderConfig() {
 }
 function __cpNormalizeProviderFormat(e, t) {
   const n = String(e || "").trim().toLowerCase();
+  if (n === "local" || n === "codex" || n === "local_codex") {
+    return "local_codex";
+  }
   if (n === "openai" || n === "openai_chat") {
     return "openai_chat";
   }
@@ -90643,7 +90646,7 @@ function __cpNormalizeContextWindow(e) {
   return Math.max(20000, Math.round(t));
 }
 function __cpIsCustomProviderPrivacyMode(e) {
-  return !!e?.enabled && !!e?.baseUrl && !!e?.apiKey;
+  return !!e?.enabled && !!e?.baseUrl && (!!e?.apiKey || String(e?.format || "").trim().toLowerCase() === "local_codex" && !!e?.defaultModel);
 }
 function __cpAreProviderModelEntriesEqual(e, t) {
   if (e === t) {
@@ -94593,7 +94596,7 @@ function o1() {
   const tn = a.useCallback(async () => {
     const e = Ze.some(e => !e.error);
     const t = await __cpReadCurrentProviderConfig();
-    const n = !!t?.enabled && !!t?.baseUrl && !!t?.apiKey;
+    const n = !!t?.enabled && !!t?.baseUrl && (!!t?.apiKey || String(t?.format || "").trim().toLowerCase() === "local_codex" && !!t?.defaultModel);
     if ((o.inputText.trim() || e) && !xt && (W || Z || n)) {
       const s = o.inputText;
       let e = o.inputText.trim();

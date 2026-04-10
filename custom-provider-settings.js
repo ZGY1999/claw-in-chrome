@@ -2163,7 +2163,7 @@
     const form = document.createElement("form");
     form.id = "cp-provider-editor-form";
     form.className = "cp-page-stack cp-page-fieldset";
-    const providerFormatOptions = [["anthropic", "Anthropic Messages"], ["openai_chat", "OpenAI Chat Completions"], ["openai_responses", "OpenAI Responses API"]];
+    const providerFormatOptions = [["anthropic", "Anthropic Messages"], ["openai_chat", "OpenAI Chat Completions"], ["openai_responses", "OpenAI Responses API"], ["local_codex", "Local Codex Bridge"]];
     const identityGrid = createNode("div", "cp-page-grid cp-page-grid-2");
     const nameField = createNode("label", "cp-page-field");
     const nameInput = createNode("input", `cp-page-input ${SHARED_FRAME_CLASS}`);
@@ -3152,7 +3152,8 @@
       renderModelOptions(currentModel);
     }
     function updateRequestPreview() {
-      const previewUrl = buildRequestUrl(baseUrlInput.value, formatSelect.value) || "/messages";
+      const format = String(formatSelect.value || "").trim().toLowerCase();
+      const previewUrl = buildRequestUrl(baseUrlInput.value, formatSelect.value) || (format === "local_codex" ? "local://codex/messages" : "/messages");
       requestPreview.textContent = strings.requestUrlPrefix + previewUrl;
       requestPreview.dataset.empty = baseUrlInput.value.trim() ? "false" : "true";
     }
@@ -3169,6 +3170,10 @@
         notes: "",
         fetchedModels: state.availableModels
       }, false);
+      if (String(next.format || "").trim().toLowerCase() === "local_codex") {
+        next.baseUrl = next.baseUrl || "https://local.codex";
+        next.apiKey = next.apiKey || "local-codex";
+      }
       next.fetchedModels = Array.isArray(state.availableModels) ? state.availableModels.slice() : [];
       return next;
     }
@@ -3477,12 +3482,13 @@
     form.addEventListener("submit", async function (event) {
       event.preventDefault();
       const next = readForm();
-      if (!next.baseUrl) {
+      const isLocalCodex = String(next.format || "").trim().toLowerCase() === "local_codex";
+      if (!isLocalCodex && !next.baseUrl) {
         setEditorStatus("error", strings.baseUrlRequired, strings.baseUrlRequired);
         baseUrlInput.focus();
         return;
       }
-      if (!next.apiKey) {
+      if (!isLocalCodex && !next.apiKey) {
         setEditorStatus("error", strings.apiKeyRequired, strings.apiKeyRequired);
         apiKeyInput.focus();
         return;

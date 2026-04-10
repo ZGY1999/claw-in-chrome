@@ -139,7 +139,14 @@
     const next = normalizeConfig(config, true);
     return [next.format || DEFAULT_FORMAT, String(next.baseUrl || "").trim(), String(next.apiKey || "").trim()].join("::");
   }
+  function isLocalCodexFormat(value) {
+    const format = typeof value === "string" ? value : value?.format;
+    return String(format || "").trim().toLowerCase() === "local_codex";
+  }
   function hasUsableConfig(config) {
+    if (isLocalCodexFormat(config)) {
+      return !!config?.defaultModel;
+    }
     return !!(config?.baseUrl && config?.apiKey && config?.defaultModel);
   }
   function createNode(tag, className, text) {
@@ -232,6 +239,10 @@
       contextWindow: state.savedConfig?.contextWindow || DEFAULT_CONTEXT_WINDOW,
       notes: ""
     }, true);
+    if (isLocalCodexFormat(next)) {
+      next.baseUrl = next.baseUrl || "https://local.codex";
+      next.apiKey = next.apiKey || "local-codex";
+    }
     next.fetchedModels = Array.isArray(state.availableModels) ? state.availableModels.slice() : [];
     return next;
   }
@@ -252,6 +263,9 @@
       return requestUrl;
     }
     const normalizedFormat = String(format || DEFAULT_FORMAT).trim().toLowerCase();
+    if (normalizedFormat === "local_codex") {
+      return "local://codex/messages";
+    }
     if (normalizedFormat === "openai_chat" || normalizedFormat === "openai") {
       return "/chat/completions";
     }
@@ -377,7 +391,7 @@
     const formatField = createNode("label", "cp-inline-field");
     const formatLabel = createNode("span", "cp-inline-label", "供应商格式");
     const formatSelect = createNode("select", "cp-inline-select");
-    [["anthropic", "Anthropic Messages"], ["openai_chat", "OpenAI Chat Completions"], ["openai_responses", "OpenAI Responses API"]].forEach(function (option) {
+    [["anthropic", "Anthropic Messages"], ["openai_chat", "OpenAI Chat Completions"], ["openai_responses", "OpenAI Responses API"], ["local_codex", "Local Codex Bridge"]].forEach(function (option) {
       const node = document.createElement("option");
       node.value = option[0];
       node.textContent = option[1];
@@ -490,12 +504,13 @@
     form.addEventListener("submit", async function (event) {
       event.preventDefault();
       const next = readForm();
-      if (next.enabled && !next.baseUrl) {
+      const isLocalCodex = isLocalCodexFormat(next);
+      if (next.enabled && !isLocalCodex && !next.baseUrl) {
         setStatus("error", "必须填写 Base URL。");
         formRefs.baseUrlInput.focus();
         return;
       }
-      if (next.enabled && !next.apiKey) {
+      if (next.enabled && !isLocalCodex && !next.apiKey) {
         setStatus("error", "必须填写 API Key。");
         formRefs.apiKeyInput.focus();
         return;

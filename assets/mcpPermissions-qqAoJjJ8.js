@@ -13099,7 +13099,7 @@ async function gn() {
     customProviderConfig: r
   }] = await Promise.all([u(), chrome.storage.local.get("anthropicApiKey"), chrome.storage.local.get("customProviderConfig")]);
   const o = !!r?.enabled && !!r?.baseUrl;
-  const a = o ? r.apiKey || undefined : t || undefined;
+  const a = o ? r.apiKey || (String(r?.format || "").trim().toLowerCase() === "local_codex" ? "local-codex" : undefined) : t || undefined;
   const i = o ? r.baseUrl : undefined;
   if (an !== e || nn !== a || providerBaseCache !== i) {
     on = undefined;

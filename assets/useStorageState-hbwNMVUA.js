@@ -37937,7 +37937,7 @@ function __cpOptionsDebugLog(e, t, n) {
   } catch {}
 }
 function __cpIsOptionsCustomProviderPrivacyMode(e) {
-  return !!e?.enabled && !!e?.baseUrl && !!e?.apiKey;
+  return !!e?.enabled && !!e?.baseUrl && (!!e?.apiKey || String(e?.format || "").trim().toLowerCase() === "local_codex" && !!e?.defaultModel);
 }
 const _A = e.createContext(null);
 const xA = ({
@@ -37946,7 +37946,7 @@ const xA = ({
   const [r, o] = e.useState(false);
   const [a, i] = e.useState(false);
   const [s, u] = e.useState(true);
-  const c = e.useCallback((e, t) => !!t || !!e?.enabled && !!e?.baseUrl && !!e?.apiKey, []);
+  const c = e.useCallback((e, t) => !!t || !!e?.enabled && !!e?.baseUrl && (!!e?.apiKey || String(e?.format || "").trim().toLowerCase() === "local_codex" && !!e?.defaultModel), []);
   e.useEffect(() => {
     __cpOptionsDebugLog("options.account.init.start", {
       href: location.pathname + location.search + location.hash

@@ -2,10 +2,12 @@
   const ANTHROPIC_FORMAT = "anthropic";
   const OPENAI_CHAT_FORMAT = "openai_chat";
   const OPENAI_RESPONSES_FORMAT = "openai_responses";
+  const LOCAL_CODEX_FORMAT = "local_codex";
   const DEFAULT_FORMAT = ANTHROPIC_FORMAT;
   const DEFAULT_CONTEXT_WINDOW = 200000;
   const MIN_CONTEXT_WINDOW = 20000;
   const FETCH_TIMEOUT_MS = 15000;
+  const CODEX_BRIDGE_CONFIG_KEY = "codexBridgeConfig";
   const REASONING_EFFORT_VALUES = ["none", "low", "medium", "high", "max"];
   const LEGACY_STORAGE_KEY = "customProviderConfig";
   const PROFILES_STORAGE_KEY = "customProviderProfiles";
@@ -27,6 +29,9 @@
     if (format === "responses" || format === OPENAI_RESPONSES_FORMAT) {
       return OPENAI_RESPONSES_FORMAT;
     }
+    if (format === "local" || format === "codex" || format === LOCAL_CODEX_FORMAT) {
+      return LOCAL_CODEX_FORMAT;
+    }
     return DEFAULT_FORMAT;
   }
   function inferFormat(source) {
@@ -35,13 +40,16 @@
       return normalizeFormat(explicitFormat);
     }
     const baseUrl = String(source?.baseUrl || "").trim().toLowerCase();
+    const name = String(source?.name || "").trim().toLowerCase();
+    if (name.includes("local codex") || name.includes("codex bridge")) {
+      return LOCAL_CODEX_FORMAT;
+    }
     if (/\/responses$/i.test(baseUrl)) {
       return OPENAI_RESPONSES_FORMAT;
     }
     if (/\/chat\/completions$/i.test(baseUrl)) {
       return OPENAI_CHAT_FORMAT;
     }
-    const name = String(source?.name || "").trim().toLowerCase();
     const model = String(source?.defaultModel || "").trim().toLowerCase();
     if (name.includes("openai") || name.includes("gpt") || model.startsWith("gpt-") || model.startsWith("chatgpt") || model.length > 1 && model.startsWith("o") && /\d/.test(model[1])) {
       return OPENAI_CHAT_FORMAT;
@@ -110,6 +118,9 @@
       } else {
         return normalizedBaseUrl + "/responses";
       }
+    }
+    if (normalizedFormat === LOCAL_CODEX_FORMAT) {
+      return /\/messages$/i.test(normalizedBaseUrl) ? normalizedBaseUrl : normalizedBaseUrl + "/messages";
     }
     if (/\/messages$/i.test(normalizedBaseUrl)) {
       return normalizedBaseUrl;
@@ -489,6 +500,15 @@
   }
   function buildProviderHeaders(config, format, includeContentType) {
     const normalizedFormat = normalizeFormat(format);
+    if (normalizedFormat === LOCAL_CODEX_FORMAT) {
+      const headers = {
+        Accept: "application/json"
+      };
+      if (includeContentType) {
+        headers["content-type"] = "application/json";
+      }
+      return headers;
+    }
     const headers = normalizedFormat === ANTHROPIC_FORMAT ? {
       "x-api-key": config.apiKey,
       "anthropic-version": "2023-06-01",
@@ -509,6 +529,9 @@
   function buildHealthCheckCandidates(config) {
     const requestedFormat = normalizeFormat(config?.format);
     const candidates = [requestedFormat];
+    if (requestedFormat === LOCAL_CODEX_FORMAT) {
+      return candidates;
+    }
     const baseUrl = String(config?.baseUrl || "").trim().toLowerCase();
     const model = String(config?.defaultModel || "").trim().toLowerCase();
     const name = String(config?.name || "").trim().toLowerCase();
@@ -521,6 +544,13 @@
   function buildHealthCheckBody(config, format) {
     const model = String(config?.defaultModel || "").trim();
     const normalizedFormat = normalizeFormat(format);
+    if (normalizedFormat === LOCAL_CODEX_FORMAT) {
+      return {
+        model,
+        input: HEALTH_CHECK_PROMPT,
+        stream: false
+      };
+    }
     if (normalizedFormat === ANTHROPIC_FORMAT) {
       return {
         model,
@@ -707,8 +737,48 @@
     })) || hasProbeResponseSignalInParts(payload.reasoning_details);
   }
   // 统一向兼容供应商请求 /models，并把返回值整理成下拉可选项。
+  function hasUsableConfig(config) {
+    const next = normalizeConfig(config);
+    if (next.format === LOCAL_CODEX_FORMAT) {
+      return !!next.defaultModel;
+    }
+    return !!(next.baseUrl && next.apiKey && next.defaultModel);
+  }
+  async function readCodexBridgeConfig() {
+    const stored = await (globalThis.chrome?.storage?.local?.get(CODEX_BRIDGE_CONFIG_KEY) || Promise.resolve({}));
+    return stored?.[CODEX_BRIDGE_CONFIG_KEY] || {};
+  }
+  async function sendCodexBridgeMessage(message) {
+    if (!globalThis.chrome?.runtime?.sendMessage) {
+      throw new Error("Local Codex bridge is unavailable in this context.");
+    }
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, response => {
+        const runtimeError = chrome.runtime.lastError?.message;
+        if (runtimeError) {
+          reject(new Error(runtimeError));
+          return;
+        }
+        resolve(response);
+      });
+    });
+  }
   async function fetchProviderModels(config, options) {
     const next = normalizeConfig(config);
+    if (next.format === LOCAL_CODEX_FORMAT) {
+      const bridge = await readCodexBridgeConfig();
+      const response = await sendCodexBridgeMessage({
+        type: "CODEX_BRIDGE_GET_STATUS"
+      });
+      if (!response?.success) {
+        throw new Error(response?.error || "Failed to contact the Local Codex bridge.");
+      }
+      const models = [next.defaultModel, bridge.defaultModel, "gpt-5.4", "gpt-5.3-codex", "gpt-5.4-mini"].filter(Boolean).map(value => ({
+        value,
+        label: value
+      }));
+      return dedupeModels(models);
+    }
     if (!next.baseUrl) {
       throw new Error("请先填写 Base URL。");
     }
@@ -753,6 +823,24 @@
   }
   async function probeProviderModel(config, options) {
     const next = normalizeConfig(config);
+    if (next.format === LOCAL_CODEX_FORMAT) {
+      if (!next.defaultModel) {
+        throw new Error("Please select a model first.");
+      }
+      const status = await sendCodexBridgeMessage({
+        type: "CODEX_BRIDGE_GET_STATUS"
+      });
+      if (!status?.success || !status?.status?.connected) {
+        throw new Error(status?.status?.error || status?.error || "Local Codex bridge is offline.");
+      }
+      return {
+        ok: true,
+        format: LOCAL_CODEX_FORMAT,
+        requestUrl: "local://codex/messages",
+        replyText: "Bridge connected",
+        responseDetected: true
+      };
+    }
     if (!next.baseUrl) {
       throw new Error("请先填写 Base URL。");
     }
@@ -835,6 +923,7 @@
     ANTHROPIC_FORMAT,
     OPENAI_CHAT_FORMAT,
     OPENAI_RESPONSES_FORMAT,
+    LOCAL_CODEX_FORMAT,
     DEFAULT_FORMAT,
     DEFAULT_CONTEXT_WINDOW,
     LEGACY_STORAGE_KEY,
@@ -850,6 +939,7 @@
     normalizeConfig,
     normalizeProfile,
     createEmptyConfig,
+    hasUsableConfig,
     projectProfileToConfig,
     readProviderStoreState,
     saveProviderProfile,

@@ -2032,7 +2032,7 @@ async function __cpShouldBypassAnthropicTraffic() {
     const {
       customProviderConfig: t
     } = await chrome.storage.local.get("customProviderConfig");
-    return !!t?.enabled && !!t?.baseUrl && !!t?.apiKey;
+    return !!t?.enabled && !!t?.baseUrl && (!!t?.apiKey || String(t?.format || "").trim().toLowerCase() === "local_codex" && !!t?.defaultModel);
   } catch {
     return false;
   }

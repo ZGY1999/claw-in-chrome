@@ -6,7 +6,11 @@
   const NATIVE_FETCH_KEY = "__customProviderNativeFetch__";
   const OPENAI_CHAT_FORMAT = "openai_chat";
   const OPENAI_RESPONSES_FORMAT = "openai_responses";
+  const LOCAL_CODEX_FORMAT = "local_codex";
   const ANTHROPIC_FORMAT = "anthropic";
+  const CODEX_BRIDGE_CONFIG_KEY = "codexBridgeConfig";
+  const TOOL_CALL_OPEN_TAG = "<tool_call>";
+  const TOOL_CALL_CLOSE_TAG = "</tool_call>";
   if (globalThis[PATCH_FLAG]) {
     return;
   }
@@ -30,6 +34,9 @@
     if (format === "responses" || format === OPENAI_RESPONSES_FORMAT) {
       return OPENAI_RESPONSES_FORMAT;
     }
+    if (format === "local" || format === "codex" || format === LOCAL_CODEX_FORMAT) {
+      return LOCAL_CODEX_FORMAT;
+    }
     return ANTHROPIC_FORMAT;
   }
   function inferFormat(source) {
@@ -38,13 +45,16 @@
       return normalizeFormat(explicitFormat);
     }
     const baseUrl = String(source?.baseUrl || "").trim().toLowerCase();
+    const name = String(source?.name || "").trim().toLowerCase();
+    if (name.includes("local codex") || name.includes("codex bridge")) {
+      return LOCAL_CODEX_FORMAT;
+    }
     if (/\/responses$/i.test(baseUrl)) {
       return OPENAI_RESPONSES_FORMAT;
     }
     if (/\/chat\/completions$/i.test(baseUrl)) {
       return OPENAI_CHAT_FORMAT;
     }
-    const name = String(source?.name || "").trim().toLowerCase();
     const model = String(source?.defaultModel || "").trim().toLowerCase();
     if (name.includes("openai") || name.includes("gpt") || model.startsWith("gpt-") || model.startsWith("chatgpt") || isOpenAIOSeries(model)) {
       return OPENAI_CHAT_FORMAT;
@@ -1611,6 +1621,301 @@
       }
     });
   }
+  async function readCodexBridgeConfig() {
+    if (!globalThis.chrome?.storage?.local) {
+      return {};
+    }
+    const stored = await chrome.storage.local.get(CODEX_BRIDGE_CONFIG_KEY);
+    return stored?.[CODEX_BRIDGE_CONFIG_KEY] || {};
+  }
+  async function sendCodexBridgeMessage(message) {
+    if (!globalThis.chrome?.runtime?.sendMessage) {
+      throw new Error("Local Codex bridge is unavailable.");
+    }
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, response => {
+        const runtimeError = chrome.runtime.lastError?.message;
+        if (runtimeError) {
+          reject(new Error(runtimeError));
+          return;
+        }
+        resolve(response);
+      });
+    });
+  }
+  function createLocalCodexTaskId() {
+    try {
+      return globalThis.crypto?.randomUUID?.() || "codex_" + Date.now().toString(36);
+    } catch {
+      return "codex_" + Date.now().toString(36);
+    }
+  }
+  function collectLocalCodexPromptSegments(blocks, role, target) {
+    if (!Array.isArray(target)) {
+      return;
+    }
+    for (const block of blocks || []) {
+      if (!block || typeof block !== "object") {
+        continue;
+      }
+      if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
+        target.push(role + ": " + block.text.trim());
+        continue;
+      }
+      if (block.type === "tool_result") {
+        target.push(role + " tool_result: " + serializeToolResultForOpenAI(block));
+        continue;
+      }
+      if (block.type === "tool_use") {
+        target.push(role + " tool_use: " + stringifyContent({
+          name: block.name,
+          input: block.input || {}
+        }));
+      }
+    }
+  }
+  function buildLocalCodexPrompt(body, config) {
+    const segments = [];
+    const systemText = formatAnthropicSystemForSingleMessage(body?.system);
+    if (systemText) {
+      segments.push("System instructions:\n" + systemText);
+    }
+    const tools = Array.isArray(body?.tools) ? body.tools : [];
+    if (tools.length) {
+      const toolLines = tools.map(function (tool) {
+        return "- " + String(tool?.name || "tool") + ": " + stringifyContent(cleanSchema(tool?.input_schema || {}));
+      });
+      segments.push("Available tools:\n" + toolLines.join("\n") + "\nIf you need to use a tool, reply with exactly one tool call block in this format and no markdown:\n" + TOOL_CALL_OPEN_TAG + '{"name":"tool_name","arguments":{}}' + TOOL_CALL_CLOSE_TAG);
+    }
+    const transcript = [];
+    for (const message of Array.isArray(body?.messages) ? body.messages : []) {
+      const role = String(message?.role || "user");
+      if (typeof message?.content === "string") {
+        if (message.content.trim()) {
+          transcript.push(role + ": " + message.content.trim());
+        }
+        continue;
+      }
+      if (Array.isArray(message?.content)) {
+        collectLocalCodexPromptSegments(message.content, role, transcript);
+      }
+    }
+    if (transcript.length) {
+      segments.push("Conversation transcript:\n" + transcript.join("\n\n"));
+    }
+    segments.push("You are the reasoning engine for a browser assistant. Do not use shell tools, file tools, or your own external tools. Either reply with assistant text or emit exactly one tool_call block.");
+    segments.push("Respond as the assistant for the latest turn.");
+    return segments.join("\n\n");
+  }
+  function parseLocalCodexToolCall(text) {
+    const rawText = typeof text === "string" ? text.trim() : "";
+    if (!rawText) {
+      return null;
+    }
+    const match = rawText.match(new RegExp(TOOL_CALL_OPEN_TAG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*([\\s\\S]+?)\\s*" + TOOL_CALL_CLOSE_TAG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+    if (!match) {
+      return null;
+    }
+    const parsed = safeJsonParse(match[1], null);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    const name = typeof parsed.name === "string" && parsed.name ? parsed.name : typeof parsed?.function?.name === "string" ? parsed.function.name : "";
+    let input = parsed.arguments != null ? parsed.arguments : parsed.input;
+    if (typeof input === "string") {
+      input = safeJsonParse(input, input);
+    }
+    if (!name) {
+      return null;
+    }
+    return {
+      type: "tool_use",
+      id: "toolu_local_" + Date.now().toString(36),
+      name,
+      input: input && typeof input === "object" ? input : {}
+    };
+  }
+  function buildAnthropicResponseFromLocalCodex(text, model) {
+    const toolUse = parseLocalCodexToolCall(text);
+    return {
+      id: "msg_local_codex_" + Date.now().toString(36),
+      type: "message",
+      role: "assistant",
+      content: toolUse ? [toolUse] : [{
+        type: "text",
+        text: String(text || "").trim()
+      }],
+      model: String(model || ""),
+      stop_reason: toolUse ? "tool_use" : "end_turn",
+      stop_sequence: null,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0
+      }
+    };
+  }
+  function createAnthropicStreamFromLocalCodex(taskPromise, model) {
+    const encoder = new TextEncoder();
+    return new ReadableStream({
+      async start(controller) {
+        const output = [];
+        try {
+          const text = await taskPromise;
+          const response = buildAnthropicResponseFromLocalCodex(text, model);
+          output.push(sseChunk("message_start", {
+            type: "message_start",
+            message: {
+              id: response.id,
+              type: "message",
+              role: "assistant",
+              content: [],
+              model: response.model,
+              stop_reason: null,
+              stop_sequence: null,
+              usage: response.usage
+            }
+          }));
+          const firstBlock = response.content[0] || {
+            type: "text",
+            text: ""
+          };
+          output.push(sseChunk("content_block_start", {
+            type: "content_block_start",
+            index: 0,
+            content_block: firstBlock.type === "tool_use" ? {
+              type: "tool_use",
+              id: firstBlock.id,
+              name: firstBlock.name,
+              input: {}
+            } : {
+              type: "text",
+              text: ""
+            }
+          }));
+          if (firstBlock.type === "tool_use") {
+            output.push(sseChunk("content_block_delta", {
+              type: "content_block_delta",
+              index: 0,
+              delta: {
+                type: "input_json_delta",
+                partial_json: JSON.stringify(firstBlock.input || {})
+              }
+            }));
+          } else {
+            output.push(sseChunk("content_block_delta", {
+              type: "content_block_delta",
+              index: 0,
+              delta: {
+                type: "text_delta",
+                text: String(firstBlock.text || "")
+              }
+            }));
+          }
+          output.push(sseChunk("content_block_stop", {
+            type: "content_block_stop",
+            index: 0
+          }));
+          output.push(sseChunk("message_delta", {
+            type: "message_delta",
+            delta: {
+              stop_reason: response.stop_reason,
+              stop_sequence: null
+            },
+            usage: response.usage
+          }));
+          output.push(sseChunk("message_stop", {
+            type: "message_stop"
+          }));
+          for (const chunkText of output) {
+            controller.enqueue(encoder.encode(chunkText));
+          }
+          controller.close();
+        } catch (error) {
+          controller.enqueue(encoder.encode(sseChunk("error", {
+            type: "error",
+            error: {
+              type: "stream_error",
+              message: error && typeof error.message === "string" ? error.message : "Local Codex request failed."
+            }
+          })));
+          controller.close();
+        }
+      }
+    });
+  }
+  async function runLocalCodexTaskFromAnthropicBody(body, config, signal) {
+    const bridgeConfig = await readCodexBridgeConfig();
+    const taskId = createLocalCodexTaskId();
+    const prompt = buildLocalCodexPrompt(body, config);
+    return new Promise(async (resolve, reject) => {
+      let lastText = "";
+      let cleanedUp = false;
+      const onMessage = function (message) {
+        if (!message || message.taskId !== taskId) {
+          return;
+        }
+        if (message.type === "CODEX_BRIDGE_TASK_EVENT") {
+          const event = message.event || {};
+          if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") {
+            lastText = event.item.text;
+          }
+          return;
+        }
+        if (message.type === "CODEX_BRIDGE_TASK_DONE") {
+          cleanup();
+          if (message.error && !lastText) {
+            reject(new Error(String(message.error || "Local Codex task failed.")));
+            return;
+          }
+          resolve(String(lastText || message.summary || "").trim());
+        }
+      };
+      const cleanup = function () {
+        if (cleanedUp) {
+          return;
+        }
+        cleanedUp = true;
+        try {
+          chrome.runtime.onMessage.removeListener(onMessage);
+        } catch {}
+        if (signal) {
+          signal.removeEventListener("abort", onAbort);
+        }
+      };
+      const onAbort = function () {
+        sendCodexBridgeMessage({
+          type: "CODEX_BRIDGE_CANCEL_TASK",
+          taskId
+        }).catch(function () {});
+        cleanup();
+        reject(new Error("Request was aborted."));
+      };
+      chrome.runtime.onMessage.addListener(onMessage);
+      if (signal) {
+        signal.addEventListener("abort", onAbort, {
+          once: true
+        });
+      }
+      try {
+        const response = await sendCodexBridgeMessage({
+          type: "CODEX_BRIDGE_START_TASK",
+          taskId,
+          prompt,
+          cwd: String(bridgeConfig.defaultCwd || "").trim(),
+          model: String(config?.defaultModel || bridgeConfig.defaultModel || "").trim(),
+          sandbox: String(bridgeConfig.sandbox || "workspace-write").trim() || "workspace-write",
+          ephemeral: bridgeConfig.ephemeral !== false
+        });
+        if (!response?.success) {
+          cleanup();
+          reject(new Error(response?.error || "Failed to start Local Codex task."));
+        }
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    });
+  }
   function detectOpenAIResponseFormat(body, fallbackFormat) {
     if (Array.isArray(body?.choices)) {
       return OPENAI_CHAT_FORMAT;
@@ -1711,7 +2016,7 @@
     return /\/messages\/?$/.test(url.pathname);
   }
   function shouldInterceptRequest(config, requestUrl, method) {
-    if (!config?.baseUrl || !config.apiKey) {
+    if (!config?.baseUrl || !config.apiKey && config.format !== LOCAL_CODEX_FORMAT) {
       return false;
     }
     if (config.format === ANTHROPIC_FORMAT) {
@@ -1724,6 +2029,9 @@
   }
   function buildProviderUrl(config) {
     const baseUrl = config.baseUrl.replace(/\/+$/, "");
+    if (config.format === LOCAL_CODEX_FORMAT) {
+      return /\/messages$/i.test(baseUrl) ? baseUrl : baseUrl + "/messages";
+    }
     if (config.format === OPENAI_CHAT_FORMAT) {
       if (/\/chat\/completions$/i.test(baseUrl)) {
         return baseUrl;
@@ -1793,6 +2101,23 @@
     const body = safeJsonParse(bodyText, null);
     if (!body || typeof body !== "object") {
       return createAnthropicErrorResponse(400, "自定义供应商只支持 JSON 请求体。");
+    }
+    if (config.format === LOCAL_CODEX_FORMAT) {
+      const taskPromise = runLocalCodexTaskFromAnthropicBody(body, config, request.signal);
+      if (body.stream) {
+        return createSseResponse(new Response(null, {
+          status: 200,
+          statusText: "OK"
+        }), createAnthropicStreamFromLocalCodex(taskPromise, body.model || config.defaultModel || ""));
+      }
+      const finalText = await taskPromise;
+      return new Response(JSON.stringify(buildAnthropicResponseFromLocalCodex(finalText, body.model || config.defaultModel || "")), {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store"
+        }
+      });
     }
     const candidates = buildProviderRequestCandidates(config, body);
     debugLog("provider.request_start", {
