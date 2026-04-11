@@ -25,8 +25,33 @@ test("parseLocalCodexToolCall extracts JSON payload from wrapped content", () =>
   });
 });
 
+test("parseLocalCodexToolCall extracts structured JSON tool call payload", () => {
+  const actual = helpers.parseLocalCodexToolCall('{"kind":"tool_call","name":"browser_tool__read_page","arguments":{"tabId":3}}');
+  assert.deepEqual(actual, {
+    name: "read_page",
+    input: {
+      tabId: 3
+    }
+  });
+});
+
+test("parseLocalCodexToolCall extracts structured JSON tool call payload with arguments_json", () => {
+  const actual = helpers.parseLocalCodexToolCall('{"kind":"tool_call","name":"browser_tool__read_page","arguments_json":"{\\"tabId\\":3}"}');
+  assert.deepEqual(actual, {
+    name: "read_page",
+    input: {
+      tabId: 3
+    }
+  });
+});
+
+test("extractLocalCodexAssistantText unwraps structured assistant payload", () => {
+  const actual = helpers.extractLocalCodexAssistantText('{"kind":"assistant","text":"页面第一条动态是生猪专家电话会。"}');
+  assert.equal(actual, "页面第一条动态是生猪专家电话会。");
+});
+
 test("parseLocalCodexToolCall accepts stringified arguments", () => {
-  const actual = helpers.parseLocalCodexToolCall('<tool_call>{"name":"click_selector","arguments":"{\\"selector\\":\\"#submit\\"}"}</tool_call>');
+  const actual = helpers.parseLocalCodexToolCall('<tool_call>{"name":"browser_tool__click_selector","arguments":"{\\"selector\\":\\"#submit\\"}"}</tool_call>');
   assert.deepEqual(actual, {
     name: "click_selector",
     input: {
@@ -93,7 +118,40 @@ test("extractLocalCodexEventError reads explicit error events", () => {
   assert.equal(actual, "usage limit reached");
 });
 
-test("buildProviderFormatCandidates prefers chat for generic v1 responses providers", () => {
+test("summarizeLocalCodexTool reports description and argument keys", () => {
+  const actual = helpers.summarizeLocalCodexTool({
+    name: "read_page",
+    description: "Read the current page",
+    input_schema: {
+      properties: {
+        selector: { type: "string" },
+        mode: { type: "string" }
+      },
+      required: ["selector"]
+    }
+  });
+  assert.deepEqual(actual, {
+    name: "browser_tool__read_page",
+    summary: "Read the current page | args: selector, mode | required: selector"
+  });
+});
+
+test("sanitizeLocalCodexSystemPrompt removes planning-mode update_plan reminders", () => {
+  const actual = helpers.sanitizeLocalCodexSystemPrompt(`Keep answers brief.
+
+<system-reminder>You are in planning mode. Before executing any tools, use update_plan with domains and approach.</system-reminder>
+
+Use the page context carefully.`);
+  assert.equal(actual, "Keep answers brief.\nUse the page context carefully.");
+});
+
+test("encodeLocalCodexToolName and decodeLocalCodexToolName map browser tool aliases", () => {
+  const encoded = helpers.encodeLocalCodexToolName("navigate");
+  assert.equal(encoded, "browser_tool__navigate");
+  assert.equal(helpers.decodeLocalCodexToolName(encoded), "navigate");
+});
+
+test("buildProviderFormatCandidates keeps configured responses first for generic v1 responses providers", () => {
   const actual = helpers.buildProviderFormatCandidates({
     requestedFormat: "openai_responses",
     baseUrl: "https://example.com/v1",
@@ -102,15 +160,15 @@ test("buildProviderFormatCandidates prefers chat for generic v1 responses provid
     stream: true
   });
   assert.deepEqual(actual, [{
-    format: "openai_chat",
-    reason: "prefer_chat_for_chat_like_provider"
-  }, {
     format: "openai_responses",
-    reason: "responses_fallback_after_chat"
+    reason: "configured_format"
+  }, {
+    format: "openai_chat",
+    reason: "responses_fallback_to_chat"
   }]);
 });
 
-test("buildProviderFormatCandidates prefers chat for non-stream generic v1 responses providers", () => {
+test("buildProviderFormatCandidates keeps configured responses first for non-stream generic v1 responses providers", () => {
   const actual = helpers.buildProviderFormatCandidates({
     requestedFormat: "openai_responses",
     baseUrl: "https://example.com/v1",
@@ -119,15 +177,15 @@ test("buildProviderFormatCandidates prefers chat for non-stream generic v1 respo
     stream: false
   });
   assert.deepEqual(actual, [{
-    format: "openai_chat",
-    reason: "prefer_chat_for_chat_like_provider"
-  }, {
     format: "openai_responses",
-    reason: "responses_fallback_after_chat"
+    reason: "configured_format"
+  }, {
+    format: "openai_chat",
+    reason: "responses_fallback_to_chat"
   }]);
 });
 
-test("buildProviderFormatCandidates prefers chat first even for explicit responses endpoints", () => {
+test("buildProviderFormatCandidates keeps only configured responses for explicit responses endpoints", () => {
   const actual = helpers.buildProviderFormatCandidates({
     requestedFormat: "openai_responses",
     baseUrl: "https://example.com/v1/responses",
@@ -136,11 +194,8 @@ test("buildProviderFormatCandidates prefers chat first even for explicit respons
     stream: true
   });
   assert.deepEqual(actual, [{
-    format: "openai_chat",
-    reason: "prefer_chat_for_endpoint_url"
-  }, {
     format: "openai_responses",
-    reason: "responses_fallback_after_chat"
+    reason: "configured_format"
   }]);
 });
 

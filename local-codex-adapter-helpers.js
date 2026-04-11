@@ -4,6 +4,8 @@
   const MANAGED_LOCAL_CODEX_PROFILE_ID = "__managed_local_codex__";
   const OPENAI_CHAT_FORMAT = "openai_chat";
   const OPENAI_RESPONSES_FORMAT = "openai_responses";
+  const LOCAL_CODEX_OUTPUT_SCHEMA_VERSION = "2026-04-11";
+  const LOCAL_CODEX_TOOL_PREFIX = "browser_tool__";
 
   function normalizeText(value) {
     return typeof value === "string" ? value.trim() : "";
@@ -110,10 +112,67 @@
     }
   }
 
+  function encodeLocalCodexToolName(name) {
+    const normalized = normalizeText(name);
+    if (!normalized) {
+      return "";
+    }
+    if (normalized.startsWith(LOCAL_CODEX_TOOL_PREFIX)) {
+      return normalized;
+    }
+    return LOCAL_CODEX_TOOL_PREFIX + normalized;
+  }
+
+  function decodeLocalCodexToolName(name) {
+    const normalized = normalizeText(name);
+    if (!normalized) {
+      return "";
+    }
+    if (!normalized.startsWith(LOCAL_CODEX_TOOL_PREFIX)) {
+      return normalized;
+    }
+    return normalized.slice(LOCAL_CODEX_TOOL_PREFIX.length);
+  }
+
+  function sanitizeLocalCodexSystemPrompt(text) {
+    const source = normalizeText(text);
+    if (!source) {
+      return "";
+    }
+    const withoutReminderBlocks = source.replace(/<system-reminder>[\s\S]*?(update_plan|planning mode|domains|approach|PL\s*\{)[\s\S]*?<\/system-reminder>/gi, "").trim();
+    const filteredLines = withoutReminderBlocks.split(/\r?\n/).filter(function (line) {
+      const normalizedLine = normalizeText(line).toLowerCase();
+      if (!normalizedLine) {
+        return false;
+      }
+      return !(/update_plan|planning mode|domains|approach|^pl\s*\{|permission prompts are skipped|follow-a-plan/.test(normalizedLine));
+    });
+    return filteredLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
   function parseLocalCodexToolCall(text) {
     const rawText = typeof text === "string" ? text.trim() : "";
     if (!rawText) {
       return null;
+    }
+    const structured = safeJsonParse(rawText, null);
+    if (structured && typeof structured === "object" && structured.kind === "tool_call") {
+      const name = normalizeText(structured.name);
+      let input = structured.arguments && typeof structured.arguments === "object" ? structured.arguments : null;
+      if (!input && typeof structured.arguments_json === "string") {
+        const parsedArguments = safeJsonParse(structured.arguments_json, null);
+        input = parsedArguments && typeof parsedArguments === "object" ? parsedArguments : {};
+      }
+      if (!input) {
+        input = {};
+      }
+      if (!name) {
+        return null;
+      }
+      return {
+        name: decodeLocalCodexToolName(name),
+        input
+      };
     }
     const match = rawText.match(new RegExp(escapeForRegex(TOOL_CALL_OPEN_TAG) + "\\s*([\\s\\S]+?)\\s*" + escapeForRegex(TOOL_CALL_CLOSE_TAG), "i"));
     if (!match) {
@@ -132,8 +191,42 @@
       return null;
     }
     return {
-      name,
+      name: decodeLocalCodexToolName(name),
       input: input && typeof input === "object" ? input : {}
+    };
+  }
+
+  function extractLocalCodexAssistantText(text) {
+    const rawText = typeof text === "string" ? text.trim() : "";
+    if (!rawText) {
+      return "";
+    }
+    const structured = safeJsonParse(rawText, null);
+    if (structured && typeof structured === "object" && structured.kind === "assistant") {
+      return normalizeText(structured.text);
+    }
+    return rawText;
+  }
+
+  function summarizeLocalCodexTool(tool) {
+    const name = normalizeText(tool?.name) || "tool";
+    const description = normalizeText(tool?.description);
+    const schema = tool?.input_schema && typeof tool.input_schema === "object" ? tool.input_schema : {};
+    const properties = schema.properties && typeof schema.properties === "object" ? Object.keys(schema.properties) : [];
+    const required = Array.isArray(schema.required) ? schema.required.filter(item => typeof item === "string" && item.trim()) : [];
+    const parts = [];
+    if (description) {
+      parts.push(description);
+    }
+    if (properties.length) {
+      parts.push("args: " + properties.join(", "));
+    }
+    if (required.length) {
+      parts.push("required: " + required.join(", "));
+    }
+    return {
+      name: encodeLocalCodexToolName(name),
+      summary: parts.join(" | ")
     };
   }
 
@@ -226,8 +319,7 @@
   function buildProviderFormatCandidates(options) {
     const source = options && typeof options === "object" ? options : {};
     const requestedFormat = normalizeProviderFormat(source.requestedFormat);
-    const rawBaseUrl = normalizeText(source.baseUrl).toLowerCase();
-    const baseUrl = normalizeProviderBaseUrl(source.baseUrl).toLowerCase();
+    const baseUrl = normalizeText(source.baseUrl).toLowerCase();
     const candidates = [];
     function pushCandidate(format, reason) {
       const normalizedFormat = normalizeProviderFormat(format);
@@ -241,12 +333,10 @@
         reason
       });
     }
-    if (requestedFormat === OPENAI_RESPONSES_FORMAT && isLikelyChatLikeProvider(source)) {
-      pushCandidate(OPENAI_CHAT_FORMAT, rawBaseUrl !== baseUrl ? "prefer_chat_for_endpoint_url" : "prefer_chat_for_chat_like_provider");
-      pushCandidate(OPENAI_RESPONSES_FORMAT, "responses_fallback_after_chat");
-      return candidates;
-    }
     pushCandidate(requestedFormat, "configured_format");
+    if (requestedFormat === OPENAI_RESPONSES_FORMAT && isLikelyChatLikeProvider(source) && !/\/responses$/i.test(baseUrl)) {
+      pushCandidate(OPENAI_CHAT_FORMAT, "responses_fallback_to_chat");
+    }
     return candidates;
   }
 
@@ -284,10 +374,17 @@
     TOOL_CALL_OPEN_TAG,
     TOOL_CALL_CLOSE_TAG,
     MANAGED_LOCAL_CODEX_PROFILE_ID,
+    LOCAL_CODEX_OUTPUT_SCHEMA_VERSION,
+    LOCAL_CODEX_TOOL_PREFIX,
     OPENAI_CHAT_FORMAT,
     OPENAI_RESPONSES_FORMAT,
+    encodeLocalCodexToolName,
+    decodeLocalCodexToolName,
+    sanitizeLocalCodexSystemPrompt,
     formatAnthropicSystemForSingleMessage,
     parseLocalCodexToolCall,
+    extractLocalCodexAssistantText,
+    summarizeLocalCodexTool,
     isManagedLocalCodexProfile,
     removeManagedLocalCodexProfiles,
     upsertManagedLocalCodexProfile,

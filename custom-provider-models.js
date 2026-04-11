@@ -57,21 +57,14 @@
     const name = String(options?.name || "").trim().toLowerCase();
     const model = String(options?.model || "").trim().toLowerCase();
     const looksChatLike = name.includes("openai") || name.includes("gpt") || model.startsWith("gpt-") || model.startsWith("chatgpt") || model.length > 1 && model.startsWith("o") && /\d/.test(model[1]);
+    pushCandidate(requestedFormat);
     if (requestedFormat === OPENAI_RESPONSES_FORMAT && looksChatLike && !/\/responses$/i.test(baseUrl)) {
       pushCandidate(OPENAI_CHAT_FORMAT);
-      pushCandidate(OPENAI_RESPONSES_FORMAT);
-      return candidates.map(function (format, index) {
-        return {
-          format,
-          reason: index === 0 ? "prefer_chat_for_generic_v1" : "responses_fallback_to_chat"
-        };
-      });
     }
-    pushCandidate(requestedFormat);
-    return candidates.map(function (format) {
+    return candidates.map(function (format, index) {
       return {
         format,
-        reason: "configured_format"
+        reason: index === 0 ? "configured_format" : "responses_fallback_to_chat"
       };
     });
   };
@@ -157,19 +150,31 @@
     return `${String(baseUrl || "").replace(/\/+$/, "")}/${String(suffix || "").replace(/^\/+/, "")}`;
   }
   function buildRequestUrl(baseUrl, format) {
-    const normalizedBaseUrl = normalizeProviderBaseUrl(baseUrl);
+    const normalizedBaseUrl = String(baseUrl || "").trim().replace(/\/+$/, "");
     const normalizedFormat = normalizeFormat(format);
     if (!normalizedBaseUrl) {
       return "";
     }
     if (normalizedFormat === OPENAI_CHAT_FORMAT) {
+      if (/\/chat\/completions$/i.test(normalizedBaseUrl)) {
+        return normalizedBaseUrl;
+      }
       return normalizedBaseUrl + "/chat/completions";
     }
     if (normalizedFormat === OPENAI_RESPONSES_FORMAT) {
+      if (/\/responses$/i.test(normalizedBaseUrl)) {
+        return normalizedBaseUrl;
+      }
       return normalizedBaseUrl + "/responses";
     }
     if (normalizedFormat === LOCAL_CODEX_FORMAT) {
+      if (/\/messages$/i.test(normalizedBaseUrl)) {
+        return normalizedBaseUrl;
+      }
       return normalizedBaseUrl + "/messages";
+    }
+    if (/\/messages$/i.test(normalizedBaseUrl)) {
+      return normalizedBaseUrl;
     }
     return normalizedBaseUrl + "/messages";
   }
@@ -442,21 +447,11 @@
       activeProfileId = profiles[0].id;
       migrated = true;
     }
-    const managedProfiles = profiles.filter(isManagedLocalCodexProfile);
-    if (managedProfiles.length) {
-      const canonicalManagedProfile = normalizeProfile({
-        ...managedProfiles[managedProfiles.length - 1],
-        id: MANAGED_LOCAL_CODEX_PROFILE_ID
-      });
-      profiles = upsertManagedLocalCodexProfile(profiles, canonicalManagedProfile);
-      if (managedProfiles.some(function (profile) {
-        return profile.id === activeProfileId;
-      })) {
-        activeProfileId = MANAGED_LOCAL_CODEX_PROFILE_ID;
-      }
-      if (managedProfiles.length > 1 || managedProfiles[0]?.id !== MANAGED_LOCAL_CODEX_PROFILE_ID) {
-        migrated = true;
-      }
+    const hadManagedProfiles = profiles.some(isManagedLocalCodexProfile);
+    if (hadManagedProfiles) {
+      profiles = removeManagedLocalCodexProfiles(profiles);
+      activeProfileId = resolveActiveProfileId(profiles, activeProfileId);
+      migrated = true;
     }
     const activeProfile = profiles.find(function (profile) {
       return profile.id === activeProfileId;
@@ -548,19 +543,6 @@
       originalApiKey: currentState.originalApiKey,
       currentApiKey: currentState.currentApiKey
     });
-    if (isManagedLocalCodexProfile(deletedProfile)) {
-      const storage = settings.storageArea || globalThis.chrome?.storage?.local;
-      if (storage) {
-        const stored = await storage.get(CODEX_BRIDGE_CONFIG_KEY);
-        const currentBridgeConfig = stored?.[CODEX_BRIDGE_CONFIG_KEY] && typeof stored[CODEX_BRIDGE_CONFIG_KEY] === "object" ? stored[CODEX_BRIDGE_CONFIG_KEY] : {};
-        await storage.set({
-          [CODEX_BRIDGE_CONFIG_KEY]: {
-            ...currentBridgeConfig,
-            enabled: false
-          }
-        });
-      }
-    }
     return nextState;
   }
   async function parseJsonSafe(response) {

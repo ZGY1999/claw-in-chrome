@@ -2,7 +2,8 @@
   const STORAGE_KEY = "customProviderConfig";
   const PROFILES_STORAGE_KEY = "customProviderProfiles";
   const ACTIVE_PROFILE_STORAGE_KEY = "customProviderActiveProfileId";
-  const PATCH_FLAG = "__customProviderFormatAdapterPatched__";
+  const PATCH_FLAG = "__customProviderFormatAdapterPatched_v20260411__";
+  const PATCH_VERSION = "2026-04-11";
   const NATIVE_FETCH_KEY = "__customProviderNativeFetch__";
   const OPENAI_CHAT_FORMAT = "openai_chat";
   const OPENAI_RESPONSES_FORMAT = "openai_responses";
@@ -32,6 +33,18 @@
     baseUrl = baseUrl.replace(/\/messages$/i, "");
     return baseUrl.replace(/\/+$/, "");
   };
+  const extractLocalCodexAssistantText = typeof localCodexHelpers.extractLocalCodexAssistantText === "function" ? localCodexHelpers.extractLocalCodexAssistantText : function (text) {
+    return typeof text === "string" ? text.trim() : "";
+  };
+  const sanitizeLocalCodexSystemPrompt = typeof localCodexHelpers.sanitizeLocalCodexSystemPrompt === "function" ? localCodexHelpers.sanitizeLocalCodexSystemPrompt : function (text) {
+    return typeof text === "string" ? text.trim() : "";
+  };
+  const summarizeLocalCodexTool = typeof localCodexHelpers.summarizeLocalCodexTool === "function" ? localCodexHelpers.summarizeLocalCodexTool : function (tool) {
+    return {
+      name: String(tool?.name || "tool"),
+      summary: ""
+    };
+  };
   const buildProviderFormatCandidates = typeof localCodexHelpers.buildProviderFormatCandidates === "function" ? localCodexHelpers.buildProviderFormatCandidates : function (options) {
     const requestedFormat = normalizeFormat(options?.requestedFormat);
     const candidates = [];
@@ -47,16 +60,13 @@
         reason
       });
     }
-    const rawBaseUrl = String(options?.baseUrl || "").trim();
-    const canonicalBaseUrl = normalizeProviderBaseUrl(rawBaseUrl);
+    const baseUrl = String(options?.baseUrl || "").trim().toLowerCase();
+    pushCandidate(requestedFormat, "configured_format");
     if (requestedFormat === OPENAI_RESPONSES_FORMAT && isChatLikeProvider(options, {
       model: options?.model
-    })) {
-      pushCandidate(OPENAI_CHAT_FORMAT, canonicalBaseUrl !== rawBaseUrl.replace(/\/+$/, "") ? "prefer_chat_for_endpoint_url" : "prefer_chat_for_chat_like_provider");
-      pushCandidate(OPENAI_RESPONSES_FORMAT, "responses_fallback_after_chat");
-      return candidates;
+    }) && !/\/responses$/i.test(baseUrl)) {
+      pushCandidate(OPENAI_CHAT_FORMAT, "responses_fallback_to_chat");
     }
-    pushCandidate(requestedFormat, "configured_format");
     return candidates;
   };
   if (globalThis[PATCH_FLAG]) {
@@ -276,6 +286,10 @@
       return fallback;
     }
   }
+  debugLog("provider.adapter_patch_applied", {
+    version: PATCH_VERSION,
+    patchFlag: PATCH_FLAG
+  });
   const formatAnthropicSystemForSingleMessage = typeof localCodexHelpers.formatAnthropicSystemForSingleMessage === "function" ? localCodexHelpers.formatAnthropicSystemForSingleMessage : function (system) {
     if (typeof system === "string") {
       return system.trim();
@@ -1742,16 +1756,17 @@
   }
   function buildLocalCodexPrompt(body, config) {
     const segments = [];
-    const systemText = formatAnthropicSystemForSingleMessage(body?.system);
+    const systemText = sanitizeLocalCodexSystemPrompt(formatAnthropicSystemForSingleMessage(body?.system));
     if (systemText) {
       segments.push("System instructions:\n" + systemText);
     }
     const tools = Array.isArray(body?.tools) ? body.tools : [];
     if (tools.length) {
       const toolLines = tools.map(function (tool) {
-        return "- " + String(tool?.name || "tool") + ": " + stringifyContent(cleanSchema(tool?.input_schema || {}));
+        const summary = summarizeLocalCodexTool(tool);
+        return "- " + summary.name + (summary.summary ? ": " + summary.summary : "");
       });
-      segments.push("Available tools:\n" + toolLines.join("\n") + "\nIf you need to use a tool, reply with exactly one tool call block in this format and no markdown:\n" + TOOL_CALL_OPEN_TAG + '{"name":"tool_name","arguments":{}}' + TOOL_CALL_CLOSE_TAG);
+      segments.push("Available browser tools:\n" + toolLines.join("\n"));
     }
     const transcript = [];
     for (const message of Array.isArray(body?.messages) ? body.messages : []) {
@@ -1769,8 +1784,11 @@
     if (transcript.length) {
       segments.push("Conversation transcript:\n" + transcript.join("\n\n"));
     }
-    segments.push("You are the reasoning engine for a browser assistant. Do not use shell tools, file tools, or your own external tools. Either reply with assistant text or emit exactly one tool_call block.");
-    segments.push("Respond as the assistant for the latest turn.");
+    segments.push("You are the reasoning engine for a browser assistant.");
+    segments.push('Return exactly one JSON object and nothing else. Always include all four fields: kind, text, name, arguments_json. For a normal reply use {"kind":"assistant","text":"...","name":"","arguments_json":"{}"}. For one browser tool call use {"kind":"tool_call","text":"","name":"browser_tool__tool_name","arguments_json":"{\\"selector\\":\\"#submit\\"}"}. The arguments_json field must be a valid JSON string.');
+    segments.push("If you choose a browser tool call, use only the provided browser tool names exactly as listed. Those names are prefixed with browser_tool__ to distinguish them from Codex built-in tools.");
+    segments.push("Never call Codex built-in tools such as update_plan, search, shell, file, web, or MCP tools. Only decide between assistant text and one browser tool call.");
+    segments.push("Respond for the latest turn only.");
     return segments.join("\n\n");
   }
   function parseLocalCodexToolCall(text) {
@@ -1787,11 +1805,13 @@
   }
   function buildAnthropicResponseFromLocalCodex(text, model) {
     const toolUse = parseLocalCodexToolCall(text);
+    const assistantText = toolUse ? "" : extractLocalCodexAssistantText(text);
     debugLog("local_codex.response_built", {
       model: String(model || ""),
       hasToolUse: !!toolUse,
       outputTextLength: typeof text === "string" ? text.length : 0,
-      toolName: toolUse?.name || ""
+      toolName: toolUse?.name || "",
+      assistantTextLength: assistantText.length
     });
     return {
       id: "msg_local_codex_" + Date.now().toString(36),
@@ -1799,7 +1819,7 @@
       role: "assistant",
       content: toolUse ? [toolUse] : [{
         type: "text",
-        text: String(text || "").trim()
+        text: assistantText
       }],
       model: String(model || ""),
       stop_reason: toolUse ? "tool_use" : "end_turn",
@@ -1921,7 +1941,9 @@
       stream: !!body?.stream,
       messageCount: Array.isArray(body?.messages) ? body.messages.length : 0,
       toolCount: Array.isArray(body?.tools) ? body.tools.length : 0,
+      toolNames: Array.isArray(body?.tools) ? body.tools.map(tool => String(tool?.name || "")).filter(Boolean).slice(0, 20) : [],
       promptLength: prompt.length,
+      promptPreview: truncateText(prompt, 1200),
       cwd: String(bridgeConfig.defaultCwd || ""),
       sandbox: String(bridgeConfig.sandbox || "workspace-write")
     });
@@ -2175,15 +2197,27 @@
     return requestUrl.startsWith(config.baseUrl) && isAnthropicMessagesPath(new URL(requestUrl));
   }
   function buildProviderUrl(config) {
-    const baseUrl = normalizeProviderBaseUrl(config.baseUrl);
+    const baseUrl = String(config.baseUrl || "").trim().replace(/\/+$/, "");
     if (config.format === LOCAL_CODEX_FORMAT) {
+      if (/\/messages$/i.test(baseUrl)) {
+        return baseUrl;
+      }
       return baseUrl + "/messages";
     }
     if (config.format === OPENAI_CHAT_FORMAT) {
+      if (/\/chat\/completions$/i.test(baseUrl)) {
+        return baseUrl;
+      }
       return baseUrl + "/chat/completions";
     }
     if (config.format === OPENAI_RESPONSES_FORMAT) {
+      if (/\/responses$/i.test(baseUrl)) {
+        return baseUrl;
+      }
       return baseUrl + "/responses";
+    }
+    if (/\/messages$/i.test(baseUrl)) {
+      return baseUrl;
     }
     return baseUrl + "/messages";
   }

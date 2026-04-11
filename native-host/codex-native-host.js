@@ -7,6 +7,7 @@ const path = require("node:path");
 const localCodexHelpers = require("../local-codex-adapter-helpers.js");
 
 const HOST_VERSION = "0.1.0";
+const LOCAL_CODEX_OUTPUT_SCHEMA_PATH = path.join(__dirname, "local-codex-output-schema.json");
 const tasks = new Map();
 let inputBuffer = Buffer.alloc(0);
 
@@ -135,7 +136,7 @@ function startTask(message) {
   }
 
   const command = resolveCodexCommand();
-  const args = ["exec", "--skip-git-repo-check", "--json", "--color", "never"];
+  const args = ["exec", "--skip-git-repo-check", "--json", "--color", "never", "--output-schema", LOCAL_CODEX_OUTPUT_SCHEMA_PATH];
   const cwd = String(message.cwd || "").trim();
   const model = String(message.model || "").trim();
   const sandbox = String(message.sandbox || "").trim();
@@ -177,7 +178,9 @@ function startTask(message) {
     text: JSON.stringify({
       command,
       args,
-      cwd: cwd || process.cwd()
+      cwd: cwd || process.cwd(),
+      outputSchemaPath: LOCAL_CODEX_OUTPUT_SCHEMA_PATH,
+      outputSchemaVersion: localCodexHelpers.LOCAL_CODEX_OUTPUT_SCHEMA_VERSION || ""
     })
   });
 

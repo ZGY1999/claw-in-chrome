@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LocalCodexBridgeResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["assistant", "tool_call"]
+    },
+    "text": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "arguments_json": {
+      "type": "string"
+    }
+  },
+  "required": ["kind", "text", "name", "arguments_json"]
+}

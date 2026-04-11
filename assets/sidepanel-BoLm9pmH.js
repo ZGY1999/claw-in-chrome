@@ -90582,21 +90582,12 @@ function __cpNormalizeAnthropicClientBaseUrl(e, t) {
   if (!n) {
     return n;
   }
-  const s = __cpNormalizeProviderFormat(e, n);
-  if (s === "anthropic") {
-    n = n.replace(/\/v1\/messages$/i, "");
-    n = n.replace(/\/messages$/i, "");
-    n = n.replace(/\/v1$/i, "");
+  if (__cpNormalizeProviderFormat(e, n) !== "anthropic") {
     return n;
   }
-  if (s === "openai_chat" || s === "openai_responses") {
-    n = n.replace(/\/chat\/completions$/i, "");
-    n = n.replace(/\/responses$/i, "");
-    return n;
-  }
-  if (s === "local_codex") {
-    n = n.replace(/\/messages$/i, "");
-  }
+  n = n.replace(/\/v1\/messages$/i, "");
+  n = n.replace(/\/messages$/i, "");
+  n = n.replace(/\/v1$/i, "");
   return n;
 }
 function __cpHashProviderCacheKey(e) {
