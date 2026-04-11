@@ -93,7 +93,7 @@ test("extractLocalCodexEventError reads explicit error events", () => {
   assert.equal(actual, "usage limit reached");
 });
 
-test("buildProviderFormatCandidates prefers chat for streamed generic v1 responses providers", () => {
+test("buildProviderFormatCandidates prefers chat for generic v1 responses providers", () => {
   const actual = helpers.buildProviderFormatCandidates({
     requestedFormat: "openai_responses",
     baseUrl: "https://example.com/v1",
@@ -103,10 +103,27 @@ test("buildProviderFormatCandidates prefers chat for streamed generic v1 respons
   });
   assert.deepEqual(actual, [{
     format: "openai_chat",
-    reason: "stream_prefer_chat_for_generic_v1"
+    reason: "prefer_chat_for_generic_v1"
   }, {
     format: "openai_responses",
-    reason: "configured_format"
+    reason: "responses_fallback_to_chat"
+  }]);
+});
+
+test("buildProviderFormatCandidates prefers chat for non-stream generic v1 responses providers", () => {
+  const actual = helpers.buildProviderFormatCandidates({
+    requestedFormat: "openai_responses",
+    baseUrl: "https://example.com/v1",
+    name: "OpenAI-compatible",
+    model: "gpt-5.4",
+    stream: false
+  });
+  assert.deepEqual(actual, [{
+    format: "openai_chat",
+    reason: "prefer_chat_for_generic_v1"
+  }, {
+    format: "openai_responses",
+    reason: "responses_fallback_to_chat"
   }]);
 });
 
@@ -141,4 +158,20 @@ test("selectLocalCodexTaskError falls back to stderr tail when task exits non-ze
     stderrLines: ["warning", "process failed because quota exceeded"]
   });
   assert.equal(actual, "process failed because quota exceeded");
+});
+
+test("selectLocalCodexTaskError unwraps nested JSON error messages", () => {
+  const actual = helpers.selectLocalCodexTaskError({
+    taskError: "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'codex-mini-latest' model is not supported when using Codex with a ChatGPT account.\"}}",
+    exitCode: 1
+  });
+  assert.equal(actual, "The 'codex-mini-latest' model is not supported when using Codex with a ChatGPT account.");
+});
+
+test("selectLocalCodexTaskError ignores mojibake fallback lines", () => {
+  const actual = helpers.selectLocalCodexTaskError({
+    exitCode: 1,
+    stderrLines: ["������������"]
+  });
+  assert.equal(actual, "Codex task failed with exit code 1.");
 });

@@ -20,18 +20,27 @@
   };
   const buildProviderFormatCandidates = typeof localCodexHelpers.buildProviderFormatCandidates === "function" ? localCodexHelpers.buildProviderFormatCandidates : function (options) {
     const requestedFormat = normalizeFormat(options?.requestedFormat);
-    const candidates = [{
-      format: requestedFormat,
-      reason: "configured_format"
-    }];
+    const candidates = [];
+    function pushCandidate(format, reason) {
+      const normalizedFormat = normalizeFormat(format);
+      if (!normalizedFormat || candidates.some(function (candidate) {
+        return candidate.format === normalizedFormat;
+      })) {
+        return;
+      }
+      candidates.push({
+        format: normalizedFormat,
+        reason
+      });
+    }
     if (requestedFormat === OPENAI_RESPONSES_FORMAT && isChatLikeProvider(options, {
       model: options?.model
     }) && !/\/responses$/i.test(String(options?.baseUrl || ""))) {
-      candidates.push({
-        format: OPENAI_CHAT_FORMAT,
-        reason: "responses_fallback_to_chat"
-      });
+      pushCandidate(OPENAI_CHAT_FORMAT, "prefer_chat_for_generic_v1");
+      pushCandidate(OPENAI_RESPONSES_FORMAT, "responses_fallback_to_chat");
+      return candidates;
     }
+    pushCandidate(requestedFormat, "configured_format");
     return candidates;
   };
   if (globalThis[PATCH_FLAG]) {

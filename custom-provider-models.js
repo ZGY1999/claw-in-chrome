@@ -48,15 +48,12 @@
     const model = String(options?.model || "").trim().toLowerCase();
     const looksChatLike = name.includes("openai") || name.includes("gpt") || model.startsWith("gpt-") || model.startsWith("chatgpt") || model.length > 1 && model.startsWith("o") && /\d/.test(model[1]);
     if (requestedFormat === OPENAI_RESPONSES_FORMAT && looksChatLike && !/\/responses$/i.test(baseUrl)) {
-      if (options?.stream) {
-        pushCandidate(OPENAI_CHAT_FORMAT);
-      }
-      pushCandidate(OPENAI_RESPONSES_FORMAT);
       pushCandidate(OPENAI_CHAT_FORMAT);
+      pushCandidate(OPENAI_RESPONSES_FORMAT);
       return candidates.map(function (format, index) {
         return {
           format,
-          reason: index === 0 ? options?.stream ? "stream_prefer_chat_for_generic_v1" : "configured_format" : "responses_fallback_to_chat"
+          reason: index === 0 ? "prefer_chat_for_generic_v1" : "responses_fallback_to_chat"
         };
       });
     }

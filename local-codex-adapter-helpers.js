@@ -9,6 +9,54 @@
     return typeof value === "string" ? value.trim() : "";
   }
 
+  function tryExtractJsonErrorMessage(value) {
+    let current = normalizeText(value);
+    for (let depth = 0; depth < 3 && current; depth += 1) {
+      const parsed = safeJsonParse(current, null);
+      if (!parsed || typeof parsed !== "object") {
+        return "";
+      }
+      const nestedCandidates = [
+        parsed?.error?.message,
+        parsed?.message,
+        parsed?.detail,
+        parsed?.reason
+      ];
+      for (const candidate of nestedCandidates) {
+        const text = normalizeText(candidate);
+        if (text && text !== current) {
+          return text;
+        }
+      }
+      current = typeof parsed.error === "string" ? normalizeText(parsed.error) : "";
+    }
+    return "";
+  }
+
+  function isUnreadableErrorText(value) {
+    const text = normalizeText(value);
+    if (!text) {
+      return false;
+    }
+    const replacementCount = (text.match(/\uFFFD/g) || []).length;
+    if (replacementCount >= 2) {
+      return true;
+    }
+    return /^[\uFFFD\ufffd\?]+$/.test(text);
+  }
+
+  function normalizeErrorText(value) {
+    const text = normalizeText(value);
+    if (!text) {
+      return "";
+    }
+    const nestedMessage = tryExtractJsonErrorMessage(text);
+    if (nestedMessage) {
+      return nestedMessage;
+    }
+    return text;
+  }
+
   function normalizeProviderFormat(value) {
     const format = normalizeText(value).toLowerCase();
     if (format === "openai" || format === OPENAI_CHAT_FORMAT) {
@@ -168,7 +216,6 @@
     const source = options && typeof options === "object" ? options : {};
     const requestedFormat = normalizeProviderFormat(source.requestedFormat);
     const baseUrl = normalizeText(source.baseUrl).toLowerCase();
-    const stream = !!source.stream;
     const candidates = [];
     function pushCandidate(format, reason) {
       const normalizedFormat = normalizeProviderFormat(format);
@@ -183,11 +230,8 @@
       });
     }
     if (requestedFormat === OPENAI_RESPONSES_FORMAT && isLikelyChatLikeProvider(source) && !/\/responses$/i.test(baseUrl)) {
-      if (stream) {
-        pushCandidate(OPENAI_CHAT_FORMAT, "stream_prefer_chat_for_generic_v1");
-      }
-      pushCandidate(OPENAI_RESPONSES_FORMAT, "configured_format");
-      pushCandidate(OPENAI_CHAT_FORMAT, "responses_fallback_to_chat");
+      pushCandidate(OPENAI_CHAT_FORMAT, "prefer_chat_for_generic_v1");
+      pushCandidate(OPENAI_RESPONSES_FORMAT, "responses_fallback_to_chat");
       return candidates;
     }
     pushCandidate(requestedFormat, "configured_format");
@@ -198,26 +242,26 @@
     const source = options && typeof options === "object" ? options : {};
     const directCandidates = [source.taskError, source.eventError, source.hostError];
     for (const candidate of directCandidates) {
-      const text = normalizeText(candidate);
+      const text = normalizeErrorText(candidate);
       if (text) {
         return text;
       }
     }
-    const stderrTail = Array.isArray(source.stderrLines) ? source.stderrLines.map(normalizeText).filter(Boolean) : [];
-    const stdoutTail = Array.isArray(source.stdoutLines) ? source.stdoutLines.map(normalizeText).filter(Boolean) : [];
-    const keywordPattern = /(error|failed|limit|quota|denied|forbidden|unauthorized|timed out|timeout|unavailable)/i;
+    const stderrTail = Array.isArray(source.stderrLines) ? source.stderrLines.map(normalizeErrorText).filter(Boolean) : [];
+    const stdoutTail = Array.isArray(source.stdoutLines) ? source.stdoutLines.map(normalizeErrorText).filter(Boolean) : [];
+    const keywordPattern = /(error|failed|limit|quota|denied|forbidden|unauthorized|timed out|timeout|unavailable|invalid_request_error|not supported)/i;
     for (const line of stderrTail.slice().reverse()) {
-      if (keywordPattern.test(line)) {
+      if (!isUnreadableErrorText(line) && keywordPattern.test(line)) {
         return line;
       }
     }
     for (const line of stdoutTail.slice().reverse()) {
-      if (keywordPattern.test(line)) {
+      if (!isUnreadableErrorText(line) && keywordPattern.test(line)) {
         return line;
       }
     }
     const fallbackLine = stderrTail[stderrTail.length - 1] || stdoutTail[stdoutTail.length - 1] || "";
-    if (fallbackLine) {
+    if (fallbackLine && !isUnreadableErrorText(fallbackLine)) {
       return fallbackLine;
     }
     const exitCode = Number(source.exitCode || 0);
