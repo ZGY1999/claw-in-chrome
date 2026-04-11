@@ -352,9 +352,42 @@
       fetchedModels: normalizeFetchedModels(raw?.fetchedModels)
     };
   }
+  function isLegacyLocalCodexProfile(profile) {
+    if (!profile || typeof profile !== "object") {
+      return false;
+    }
+    if (isManagedLocalCodexProfile(profile)) {
+      return true;
+    }
+    const normalizedFormat = normalizeFormat(profile.format);
+    if (normalizedFormat === LOCAL_CODEX_FORMAT) {
+      return true;
+    }
+    const normalizedName = String(profile.name || "").trim().toLowerCase();
+    if (normalizedName === "local codex" || normalizedName === "codex bridge") {
+      return true;
+    }
+    const normalizedBaseUrl = normalizeProviderBaseUrl(profile.baseUrl).toLowerCase();
+    return normalizedBaseUrl === "https://local.codex" || normalizedBaseUrl === "local://codex";
+  }
+  function removeLegacyLocalCodexProfiles(profiles) {
+    return Array.isArray(profiles) ? profiles.filter(function (profile) {
+      return !isLegacyLocalCodexProfile(profile);
+    }) : [];
+  }
   function hasConfigContent(raw) {
     const config = normalizeConfig(raw);
     return !!(config.name || config.baseUrl || config.apiKey || config.defaultModel || config.notes || normalizeFetchedModels(raw?.fetchedModels).length);
+  }
+  function isUsableProviderProfile(profile) {
+    if (!profile || typeof profile !== "object") {
+      return false;
+    }
+    const normalizedFormat = normalizeFormat(profile.format);
+    if (normalizedFormat === LOCAL_CODEX_FORMAT) {
+      return false;
+    }
+    return !!(String(profile.baseUrl || "").trim() && String(profile.apiKey || "").trim() && String(profile.defaultModel || "").trim());
   }
   function projectProfileToConfig(profile) {
     if (!profile) {
@@ -375,9 +408,17 @@
   }
   function resolveActiveProfileId(profiles, requestedId) {
     const normalizedRequestedId = String(requestedId || "").trim();
-    if (normalizedRequestedId && profiles.some(function (profile) {
+    const requestedProfile = normalizedRequestedId ? profiles.find(function (profile) {
       return profile.id === normalizedRequestedId;
-    })) {
+    }) || null : null;
+    if (requestedProfile && isUsableProviderProfile(requestedProfile)) {
+      return normalizedRequestedId;
+    }
+    const firstUsableProfile = profiles.find(isUsableProviderProfile) || null;
+    if (firstUsableProfile) {
+      return firstUsableProfile.id;
+    }
+    if (requestedProfile) {
       return normalizedRequestedId;
     }
     return profiles[0]?.id || null;
@@ -395,7 +436,7 @@
     if (!storage) {
       throw new Error("Provider storage is not available.");
     }
-    const profiles = Array.isArray(state.profiles) ? state.profiles.map(normalizeProfile) : [];
+    const profiles = removeLegacyLocalCodexProfiles(Array.isArray(state.profiles) ? state.profiles.map(normalizeProfile) : []);
     const activeProfileId = resolveActiveProfileId(profiles, state.activeProfileId);
     const activeProfile = profiles.find(function (profile) {
       return profile.id === activeProfileId;
@@ -447,9 +488,9 @@
       activeProfileId = profiles[0].id;
       migrated = true;
     }
-    const hadManagedProfiles = profiles.some(isManagedLocalCodexProfile);
-    if (hadManagedProfiles) {
-      profiles = removeManagedLocalCodexProfiles(profiles);
+    const hadLegacyLocalCodexProfiles = profiles.some(isLegacyLocalCodexProfile);
+    if (hadLegacyLocalCodexProfiles) {
+      profiles = removeLegacyLocalCodexProfiles(profiles);
       activeProfileId = resolveActiveProfileId(profiles, activeProfileId);
       migrated = true;
     }

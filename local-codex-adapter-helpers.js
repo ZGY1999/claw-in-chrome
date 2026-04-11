@@ -59,6 +59,14 @@
     return text;
   }
 
+  function isBenignLocalCodexWarning(value) {
+    const text = normalizeErrorText(value);
+    if (!text) {
+      return false;
+    }
+    return /rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired/i.test(text) || /failed to warm featured plugin ids cache/i.test(text) || /startup remote plugin sync failed/i.test(text) || /shell snapshot not supported yet for PowerShell/i.test(text) || /failed to remove legacy logs db/i.test(text) || /failed to open state db/i.test(text) || /failed to read MCP server stderr/i.test(text) || /ignoring interface\.defaultPrompt/i.test(text) || /ephemeral threads do not support includeTurns/i.test(text);
+  }
+
   function normalizeProviderFormat(value) {
     const format = normalizeText(value).toLowerCase();
     if (format === "openai" || format === OPENAI_CHAT_FORMAT) {
@@ -342,10 +350,15 @@
 
   function selectLocalCodexTaskError(options) {
     const source = options && typeof options === "object" ? options : {};
+    const hasStructuredOutput = !!source.hasStructuredOutput;
+    const exitCode = Number(source.exitCode || 0);
     const directCandidates = [source.taskError, source.eventError, source.hostError];
     for (const candidate of directCandidates) {
       const text = normalizeErrorText(candidate);
       if (text) {
+        if (hasStructuredOutput && exitCode === 0 && isBenignLocalCodexWarning(text)) {
+          continue;
+        }
         return text;
       }
     }
@@ -353,20 +366,25 @@
     const stdoutTail = Array.isArray(source.stdoutLines) ? source.stdoutLines.map(normalizeErrorText).filter(Boolean) : [];
     const keywordPattern = /(error|failed|limit|quota|denied|forbidden|unauthorized|timed out|timeout|unavailable|invalid_request_error|not supported)/i;
     for (const line of stderrTail.slice().reverse()) {
+      if (hasStructuredOutput && exitCode === 0 && isBenignLocalCodexWarning(line)) {
+        continue;
+      }
       if (!isUnreadableErrorText(line) && keywordPattern.test(line)) {
         return line;
       }
     }
     for (const line of stdoutTail.slice().reverse()) {
+      if (hasStructuredOutput && exitCode === 0 && isBenignLocalCodexWarning(line)) {
+        continue;
+      }
       if (!isUnreadableErrorText(line) && keywordPattern.test(line)) {
         return line;
       }
     }
     const fallbackLine = stderrTail[stderrTail.length - 1] || stdoutTail[stdoutTail.length - 1] || "";
-    if (fallbackLine && !isUnreadableErrorText(fallbackLine)) {
+    if (fallbackLine && !isUnreadableErrorText(fallbackLine) && !(hasStructuredOutput && exitCode === 0 && isBenignLocalCodexWarning(fallbackLine))) {
       return fallbackLine;
     }
-    const exitCode = Number(source.exitCode || 0);
     return exitCode !== 0 ? `Codex task failed with exit code ${exitCode}.` : "";
   }
 
@@ -392,6 +410,7 @@
     extractLocalCodexEventError,
     normalizeProviderBaseUrl,
     buildProviderFormatCandidates,
+    isBenignLocalCodexWarning,
     selectLocalCodexTaskError
   };
 

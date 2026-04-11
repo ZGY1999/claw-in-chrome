@@ -246,6 +246,27 @@ test("selectLocalCodexTaskError unwraps nested JSON error messages", () => {
   assert.equal(actual, "The 'codex-mini-latest' model is not supported when using Codex with a ChatGPT account.");
 });
 
+test("selectLocalCodexTaskError ignores benign MCP auth warnings when structured output exists", () => {
+  const actual = helpers.selectLocalCodexTaskError({
+    taskError: "2026-04-11T08:57:13.973318Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: \"Bearer resource_metadata=\\\"https://huggingface.co/.well-known/oauth-protected-resource/mcp?login\\\"\" })",
+    exitCode: 0,
+    hasStructuredOutput: true,
+    stderrLines: [
+      "2026-04-11T08:57:13.973318Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: \"Bearer resource_metadata=\\\"https://huggingface.co/.well-known/oauth-protected-resource/mcp?login\\\"\" })"
+    ]
+  });
+  assert.equal(actual, "");
+});
+
+test("selectLocalCodexTaskError keeps real tool routing errors even with structured output", () => {
+  const actual = helpers.selectLocalCodexTaskError({
+    eventError: "2026-04-11T08:07:10.287886Z ERROR codex_core::tools::router: error=failed to parse function arguments: unknown field `domains`, expected `explanation` or `plan` at line 1 column 10",
+    exitCode: 0,
+    hasStructuredOutput: true
+  });
+  assert.match(actual, /unknown field `domains`/);
+});
+
 test("selectLocalCodexTaskError ignores mojibake fallback lines", () => {
   const actual = helpers.selectLocalCodexTaskError({
     exitCode: 1,

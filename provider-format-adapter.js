@@ -1994,10 +1994,12 @@
           return;
         }
         if (message.type === "CODEX_BRIDGE_TASK_DONE") {
+          const hasStructuredOutput = !!String(lastText || message.summary || "").trim();
           const terminalError = selectLocalCodexTaskError({
             taskError: message.error,
             eventError: lastError,
             exitCode: Number(message.exitCode || 0),
+            hasStructuredOutput,
             stdoutLines,
             stderrLines
           });
