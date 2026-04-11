@@ -103,10 +103,10 @@ test("buildProviderFormatCandidates prefers chat for generic v1 responses provid
   });
   assert.deepEqual(actual, [{
     format: "openai_chat",
-    reason: "prefer_chat_for_generic_v1"
+    reason: "prefer_chat_for_chat_like_provider"
   }, {
     format: "openai_responses",
-    reason: "responses_fallback_to_chat"
+    reason: "responses_fallback_after_chat"
   }]);
 });
 
@@ -120,19 +120,42 @@ test("buildProviderFormatCandidates prefers chat for non-stream generic v1 respo
   });
   assert.deepEqual(actual, [{
     format: "openai_chat",
-    reason: "prefer_chat_for_generic_v1"
+    reason: "prefer_chat_for_chat_like_provider"
   }, {
     format: "openai_responses",
-    reason: "responses_fallback_to_chat"
+    reason: "responses_fallback_after_chat"
   }]);
 });
 
-test("buildProviderFormatCandidates keeps responses first for explicit responses endpoints", () => {
+test("buildProviderFormatCandidates prefers chat first even for explicit responses endpoints", () => {
   const actual = helpers.buildProviderFormatCandidates({
     requestedFormat: "openai_responses",
-    baseUrl: "https://api.openai.com/v1/responses",
-    name: "OpenAI",
+    baseUrl: "https://example.com/v1/responses",
+    name: "Codex",
     model: "gpt-5.4",
+    stream: true
+  });
+  assert.deepEqual(actual, [{
+    format: "openai_chat",
+    reason: "prefer_chat_for_endpoint_url"
+  }, {
+    format: "openai_responses",
+    reason: "responses_fallback_after_chat"
+  }]);
+});
+
+test("normalizeProviderBaseUrl strips endpoint suffixes", () => {
+  assert.equal(helpers.normalizeProviderBaseUrl("https://example.com/v1/responses"), "https://example.com/v1");
+  assert.equal(helpers.normalizeProviderBaseUrl("https://example.com/v1/chat/completions"), "https://example.com/v1");
+  assert.equal(helpers.normalizeProviderBaseUrl("https://local.codex/messages"), "https://local.codex");
+});
+
+test("buildProviderFormatCandidates keeps responses first for non-chat providers", () => {
+  const actual = helpers.buildProviderFormatCandidates({
+    requestedFormat: "openai_responses",
+    baseUrl: "https://example.com/v1/responses",
+    name: "Responses-only gateway",
+    model: "text-model",
     stream: true
   });
   assert.deepEqual(actual, [{

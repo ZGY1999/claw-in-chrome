@@ -152,7 +152,7 @@ function startTask(message) {
   if (ephemeral) {
     args.push("--ephemeral");
   }
-  args.push(prompt);
+  args.push("-");
 
   const child = spawn(command, args, createSpawnOptions(cwd));
   const summaryParts = [];
@@ -169,6 +169,32 @@ function startTask(message) {
     });
     tasks.delete(taskId);
   });
+
+  sendMessage({
+    type: "task_log",
+    taskId,
+    stream: "meta",
+    text: JSON.stringify({
+      command,
+      args,
+      cwd: cwd || process.cwd()
+    })
+  });
+
+  if (child.stdin) {
+    try {
+      child.stdin.write(prompt);
+      if (!/\r?\n$/.test(prompt)) {
+        child.stdin.write(os.EOL);
+      }
+      child.stdin.end();
+    } catch (error) {
+      taskError = error instanceof Error ? error.message : String(error || "Failed to write task prompt to Codex stdin.");
+      try {
+        child.kill();
+      } catch {}
+    }
+  }
 
   streamLines(child.stdout, line => {
     if (!line.trim()) {

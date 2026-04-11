@@ -29,6 +29,16 @@
       id: MANAGED_LOCAL_CODEX_PROFILE_ID
     });
   };
+  const normalizeProviderBaseUrl = typeof localCodexHelpers.normalizeProviderBaseUrl === "function" ? localCodexHelpers.normalizeProviderBaseUrl : function (value) {
+    let baseUrl = String(value || "").trim().replace(/\/+$/, "");
+    if (!baseUrl) {
+      return "";
+    }
+    baseUrl = baseUrl.replace(/\/chat\/completions$/i, "");
+    baseUrl = baseUrl.replace(/\/responses$/i, "");
+    baseUrl = baseUrl.replace(/\/messages$/i, "");
+    return baseUrl.replace(/\/+$/, "");
+  };
   const removeManagedLocalCodexProfiles = typeof localCodexHelpers.removeManagedLocalCodexProfiles === "function" ? localCodexHelpers.removeManagedLocalCodexProfiles : function (profiles) {
     return Array.isArray(profiles) ? profiles.filter(function (profile) {
       return !isManagedLocalCodexProfile(profile);
@@ -147,33 +157,21 @@
     return `${String(baseUrl || "").replace(/\/+$/, "")}/${String(suffix || "").replace(/^\/+/, "")}`;
   }
   function buildRequestUrl(baseUrl, format) {
-    const normalizedBaseUrl = String(baseUrl || "").trim().replace(/\/+$/, "");
+    const normalizedBaseUrl = normalizeProviderBaseUrl(baseUrl);
     const normalizedFormat = normalizeFormat(format);
     if (!normalizedBaseUrl) {
       return "";
     }
     if (normalizedFormat === OPENAI_CHAT_FORMAT) {
-      if (/\/chat\/completions$/i.test(normalizedBaseUrl)) {
-        return normalizedBaseUrl;
-      } else {
-        return normalizedBaseUrl + "/chat/completions";
-      }
+      return normalizedBaseUrl + "/chat/completions";
     }
     if (normalizedFormat === OPENAI_RESPONSES_FORMAT) {
-      if (/\/responses$/i.test(normalizedBaseUrl)) {
-        return normalizedBaseUrl;
-      } else {
-        return normalizedBaseUrl + "/responses";
-      }
+      return normalizedBaseUrl + "/responses";
     }
     if (normalizedFormat === LOCAL_CODEX_FORMAT) {
-      return /\/messages$/i.test(normalizedBaseUrl) ? normalizedBaseUrl : normalizedBaseUrl + "/messages";
-    }
-    if (/\/messages$/i.test(normalizedBaseUrl)) {
-      return normalizedBaseUrl;
-    } else {
       return normalizedBaseUrl + "/messages";
     }
+    return normalizedBaseUrl + "/messages";
   }
   function extractErrorMessage(payload, fallback) {
     if (typeof payload === "string" && payload.trim()) {

@@ -68,6 +68,17 @@
     return format;
   }
 
+  function normalizeProviderBaseUrl(value) {
+    let baseUrl = normalizeText(value).replace(/\/+$/, "");
+    if (!baseUrl) {
+      return "";
+    }
+    baseUrl = baseUrl.replace(/\/chat\/completions$/i, "");
+    baseUrl = baseUrl.replace(/\/responses$/i, "");
+    baseUrl = baseUrl.replace(/\/messages$/i, "");
+    return baseUrl.replace(/\/+$/, "");
+  }
+
   function formatAnthropicSystemForSingleMessage(system) {
     if (typeof system === "string") {
       return system.trim();
@@ -215,7 +226,8 @@
   function buildProviderFormatCandidates(options) {
     const source = options && typeof options === "object" ? options : {};
     const requestedFormat = normalizeProviderFormat(source.requestedFormat);
-    const baseUrl = normalizeText(source.baseUrl).toLowerCase();
+    const rawBaseUrl = normalizeText(source.baseUrl).toLowerCase();
+    const baseUrl = normalizeProviderBaseUrl(source.baseUrl).toLowerCase();
     const candidates = [];
     function pushCandidate(format, reason) {
       const normalizedFormat = normalizeProviderFormat(format);
@@ -229,9 +241,9 @@
         reason
       });
     }
-    if (requestedFormat === OPENAI_RESPONSES_FORMAT && isLikelyChatLikeProvider(source) && !/\/responses$/i.test(baseUrl)) {
-      pushCandidate(OPENAI_CHAT_FORMAT, "prefer_chat_for_generic_v1");
-      pushCandidate(OPENAI_RESPONSES_FORMAT, "responses_fallback_to_chat");
+    if (requestedFormat === OPENAI_RESPONSES_FORMAT && isLikelyChatLikeProvider(source)) {
+      pushCandidate(OPENAI_CHAT_FORMAT, rawBaseUrl !== baseUrl ? "prefer_chat_for_endpoint_url" : "prefer_chat_for_chat_like_provider");
+      pushCandidate(OPENAI_RESPONSES_FORMAT, "responses_fallback_after_chat");
       return candidates;
     }
     pushCandidate(requestedFormat, "configured_format");
@@ -281,6 +293,7 @@
     upsertManagedLocalCodexProfile,
     extractLocalCodexEventText,
     extractLocalCodexEventError,
+    normalizeProviderBaseUrl,
     buildProviderFormatCandidates,
     selectLocalCodexTaskError
   };

@@ -18,6 +18,20 @@
   const extractLocalCodexEventError = typeof localCodexHelpers.extractLocalCodexEventError === "function" ? localCodexHelpers.extractLocalCodexEventError : function (event) {
     return typeof event?.message === "string" ? event.message.trim() : "";
   };
+  const selectLocalCodexTaskError = typeof localCodexHelpers.selectLocalCodexTaskError === "function" ? localCodexHelpers.selectLocalCodexTaskError : function (options) {
+    const exitCode = Number(options?.exitCode || 0);
+    return String(options?.taskError || options?.eventError || options?.hostError || "").trim() || (exitCode !== 0 ? `Codex task failed with exit code ${exitCode}.` : "");
+  };
+  const normalizeProviderBaseUrl = typeof localCodexHelpers.normalizeProviderBaseUrl === "function" ? localCodexHelpers.normalizeProviderBaseUrl : function (value) {
+    let baseUrl = String(value || "").trim().replace(/\/+$/, "");
+    if (!baseUrl) {
+      return "";
+    }
+    baseUrl = baseUrl.replace(/\/chat\/completions$/i, "");
+    baseUrl = baseUrl.replace(/\/responses$/i, "");
+    baseUrl = baseUrl.replace(/\/messages$/i, "");
+    return baseUrl.replace(/\/+$/, "");
+  };
   const buildProviderFormatCandidates = typeof localCodexHelpers.buildProviderFormatCandidates === "function" ? localCodexHelpers.buildProviderFormatCandidates : function (options) {
     const requestedFormat = normalizeFormat(options?.requestedFormat);
     const candidates = [];
@@ -33,11 +47,13 @@
         reason
       });
     }
+    const rawBaseUrl = String(options?.baseUrl || "").trim();
+    const canonicalBaseUrl = normalizeProviderBaseUrl(rawBaseUrl);
     if (requestedFormat === OPENAI_RESPONSES_FORMAT && isChatLikeProvider(options, {
       model: options?.model
-    }) && !/\/responses$/i.test(String(options?.baseUrl || ""))) {
-      pushCandidate(OPENAI_CHAT_FORMAT, "prefer_chat_for_generic_v1");
-      pushCandidate(OPENAI_RESPONSES_FORMAT, "responses_fallback_to_chat");
+    })) {
+      pushCandidate(OPENAI_CHAT_FORMAT, canonicalBaseUrl !== rawBaseUrl.replace(/\/+$/, "") ? "prefer_chat_for_endpoint_url" : "prefer_chat_for_chat_like_provider");
+      pushCandidate(OPENAI_RESPONSES_FORMAT, "responses_fallback_after_chat");
       return candidates;
     }
     pushCandidate(requestedFormat, "configured_format");
@@ -1912,6 +1928,8 @@
     return new Promise(async (resolve, reject) => {
       let lastText = "";
       let lastError = "";
+      const stdoutLines = [];
+      const stderrLines = [];
       let cleanedUp = false;
       const onMessage = function (message) {
         if (!message || message.taskId !== taskId) {
@@ -1935,17 +1953,41 @@
           }
           return;
         }
+        if (message.type === "CODEX_BRIDGE_TASK_LOG") {
+          const text = String(message.text || "").trim();
+          if (!text) {
+            return;
+          }
+          const stream = String(message.stream || "stdout");
+          const targetLines = stream === "stderr" ? stderrLines : stdoutLines;
+          targetLines.push(text);
+          if (targetLines.length > 20) {
+            targetLines.shift();
+          }
+          debugLog("local_codex.task_log", {
+            taskId,
+            stream,
+            text
+          }, stream === "stderr" ? "warn" : "info");
+          return;
+        }
         if (message.type === "CODEX_BRIDGE_TASK_DONE") {
+          const terminalError = selectLocalCodexTaskError({
+            taskError: message.error,
+            eventError: lastError,
+            exitCode: Number(message.exitCode || 0),
+            stdoutLines,
+            stderrLines
+          });
           debugLog("local_codex.task_done", {
             taskId,
             success: !!message.success,
             exitCode: Number(message.exitCode || 0),
-            error: String(message.error || lastError || ""),
+            error: String(terminalError || ""),
             summaryLength: String(message.summary || "").length,
             lastTextLength: lastText.length
-          }, message.error || lastError || Number(message.exitCode || 0) !== 0 ? "error" : "info");
+          }, terminalError || Number(message.exitCode || 0) !== 0 ? "error" : "info");
           cleanup();
-          const terminalError = String(message.error || lastError || "");
           const exitCode = Number(message.exitCode || 0);
           if (terminalError) {
             reject(new Error(terminalError));
@@ -2133,25 +2175,17 @@
     return requestUrl.startsWith(config.baseUrl) && isAnthropicMessagesPath(new URL(requestUrl));
   }
   function buildProviderUrl(config) {
-    const baseUrl = config.baseUrl.replace(/\/+$/, "");
+    const baseUrl = normalizeProviderBaseUrl(config.baseUrl);
     if (config.format === LOCAL_CODEX_FORMAT) {
-      return /\/messages$/i.test(baseUrl) ? baseUrl : baseUrl + "/messages";
+      return baseUrl + "/messages";
     }
     if (config.format === OPENAI_CHAT_FORMAT) {
-      if (/\/chat\/completions$/i.test(baseUrl)) {
-        return baseUrl;
-      } else {
-        return baseUrl + "/chat/completions";
-      }
+      return baseUrl + "/chat/completions";
     }
     if (config.format === OPENAI_RESPONSES_FORMAT) {
-      if (/\/responses$/i.test(baseUrl)) {
-        return baseUrl;
-      } else {
-        return baseUrl + "/responses";
-      }
+      return baseUrl + "/responses";
     }
-    return baseUrl;
+    return baseUrl + "/messages";
   }
   function buildProviderHeaders(originalHeaders, config, isStreamRequest) {
     const headers = new Headers();
@@ -2236,6 +2270,7 @@
         return item.format;
       }),
       baseUrl: config.baseUrl,
+      canonicalBaseUrl: normalizeProviderBaseUrl(config.baseUrl),
       model: String(body?.model || ""),
       stream: !!body?.stream,
       messageCount: Array.isArray(body?.messages) ? body.messages.length : 0
