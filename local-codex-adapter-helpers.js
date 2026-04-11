@@ -2,9 +2,22 @@
   const TOOL_CALL_OPEN_TAG = "<tool_call>";
   const TOOL_CALL_CLOSE_TAG = "</tool_call>";
   const MANAGED_LOCAL_CODEX_PROFILE_ID = "__managed_local_codex__";
+  const OPENAI_CHAT_FORMAT = "openai_chat";
+  const OPENAI_RESPONSES_FORMAT = "openai_responses";
 
   function normalizeText(value) {
     return typeof value === "string" ? value.trim() : "";
+  }
+
+  function normalizeProviderFormat(value) {
+    const format = normalizeText(value).toLowerCase();
+    if (format === "openai" || format === OPENAI_CHAT_FORMAT) {
+      return OPENAI_CHAT_FORMAT;
+    }
+    if (format === "responses" || format === OPENAI_RESPONSES_FORMAT) {
+      return OPENAI_RESPONSES_FORMAT;
+    }
+    return format;
   }
 
   function formatAnthropicSystemForSingleMessage(system) {
@@ -144,17 +157,88 @@
     return "";
   }
 
+  function isLikelyChatLikeProvider(options) {
+    const source = options && typeof options === "object" ? options : {};
+    const name = normalizeText(source.name).toLowerCase();
+    const model = normalizeText(source.model).toLowerCase();
+    return name.includes("openai") || name.includes("gpt") || model.startsWith("gpt-") || model.startsWith("chatgpt") || model.length > 1 && model.startsWith("o") && /\d/.test(model[1]);
+  }
+
+  function buildProviderFormatCandidates(options) {
+    const source = options && typeof options === "object" ? options : {};
+    const requestedFormat = normalizeProviderFormat(source.requestedFormat);
+    const baseUrl = normalizeText(source.baseUrl).toLowerCase();
+    const stream = !!source.stream;
+    const candidates = [];
+    function pushCandidate(format, reason) {
+      const normalizedFormat = normalizeProviderFormat(format);
+      if (!normalizedFormat || candidates.some(function (candidate) {
+        return candidate.format === normalizedFormat;
+      })) {
+        return;
+      }
+      candidates.push({
+        format: normalizedFormat,
+        reason
+      });
+    }
+    if (requestedFormat === OPENAI_RESPONSES_FORMAT && isLikelyChatLikeProvider(source) && !/\/responses$/i.test(baseUrl)) {
+      if (stream) {
+        pushCandidate(OPENAI_CHAT_FORMAT, "stream_prefer_chat_for_generic_v1");
+      }
+      pushCandidate(OPENAI_RESPONSES_FORMAT, "configured_format");
+      pushCandidate(OPENAI_CHAT_FORMAT, "responses_fallback_to_chat");
+      return candidates;
+    }
+    pushCandidate(requestedFormat, "configured_format");
+    return candidates;
+  }
+
+  function selectLocalCodexTaskError(options) {
+    const source = options && typeof options === "object" ? options : {};
+    const directCandidates = [source.taskError, source.eventError, source.hostError];
+    for (const candidate of directCandidates) {
+      const text = normalizeText(candidate);
+      if (text) {
+        return text;
+      }
+    }
+    const stderrTail = Array.isArray(source.stderrLines) ? source.stderrLines.map(normalizeText).filter(Boolean) : [];
+    const stdoutTail = Array.isArray(source.stdoutLines) ? source.stdoutLines.map(normalizeText).filter(Boolean) : [];
+    const keywordPattern = /(error|failed|limit|quota|denied|forbidden|unauthorized|timed out|timeout|unavailable)/i;
+    for (const line of stderrTail.slice().reverse()) {
+      if (keywordPattern.test(line)) {
+        return line;
+      }
+    }
+    for (const line of stdoutTail.slice().reverse()) {
+      if (keywordPattern.test(line)) {
+        return line;
+      }
+    }
+    const fallbackLine = stderrTail[stderrTail.length - 1] || stdoutTail[stdoutTail.length - 1] || "";
+    if (fallbackLine) {
+      return fallbackLine;
+    }
+    const exitCode = Number(source.exitCode || 0);
+    return exitCode !== 0 ? `Codex task failed with exit code ${exitCode}.` : "";
+  }
+
   const helpers = {
     TOOL_CALL_OPEN_TAG,
     TOOL_CALL_CLOSE_TAG,
     MANAGED_LOCAL_CODEX_PROFILE_ID,
+    OPENAI_CHAT_FORMAT,
+    OPENAI_RESPONSES_FORMAT,
     formatAnthropicSystemForSingleMessage,
     parseLocalCodexToolCall,
     isManagedLocalCodexProfile,
     removeManagedLocalCodexProfiles,
     upsertManagedLocalCodexProfile,
     extractLocalCodexEventText,
-    extractLocalCodexEventError
+    extractLocalCodexEventError,
+    buildProviderFormatCandidates,
+    selectLocalCodexTaskError
   };
 
   root.LocalCodexAdapterHelpers = helpers;

@@ -92,3 +92,53 @@ test("extractLocalCodexEventError reads explicit error events", () => {
   });
   assert.equal(actual, "usage limit reached");
 });
+
+test("buildProviderFormatCandidates prefers chat for streamed generic v1 responses providers", () => {
+  const actual = helpers.buildProviderFormatCandidates({
+    requestedFormat: "openai_responses",
+    baseUrl: "https://example.com/v1",
+    name: "Codex",
+    model: "gpt-5.4",
+    stream: true
+  });
+  assert.deepEqual(actual, [{
+    format: "openai_chat",
+    reason: "stream_prefer_chat_for_generic_v1"
+  }, {
+    format: "openai_responses",
+    reason: "configured_format"
+  }]);
+});
+
+test("buildProviderFormatCandidates keeps responses first for explicit responses endpoints", () => {
+  const actual = helpers.buildProviderFormatCandidates({
+    requestedFormat: "openai_responses",
+    baseUrl: "https://api.openai.com/v1/responses",
+    name: "OpenAI",
+    model: "gpt-5.4",
+    stream: true
+  });
+  assert.deepEqual(actual, [{
+    format: "openai_responses",
+    reason: "configured_format"
+  }]);
+});
+
+test("selectLocalCodexTaskError prefers explicit event error", () => {
+  const actual = helpers.selectLocalCodexTaskError({
+    taskError: "",
+    eventError: "usage limit reached",
+    exitCode: 1,
+    stdoutLines: ["some line"],
+    stderrLines: ["stderr line"]
+  });
+  assert.equal(actual, "usage limit reached");
+});
+
+test("selectLocalCodexTaskError falls back to stderr tail when task exits non-zero", () => {
+  const actual = helpers.selectLocalCodexTaskError({
+    exitCode: 1,
+    stderrLines: ["warning", "process failed because quota exceeded"]
+  });
+  assert.equal(actual, "process failed because quota exceeded");
+});

@@ -34,6 +34,40 @@
       return !isManagedLocalCodexProfile(profile);
     }) : [];
   };
+  const buildProviderFormatCandidates = typeof localCodexHelpers.buildProviderFormatCandidates === "function" ? localCodexHelpers.buildProviderFormatCandidates : function (options) {
+    const requestedFormat = normalizeFormat(options?.requestedFormat);
+    const candidates = [];
+    function pushCandidate(format) {
+      const normalized = normalizeFormat(format);
+      if (!candidates.includes(normalized)) {
+        candidates.push(normalized);
+      }
+    }
+    const baseUrl = String(options?.baseUrl || "").trim().toLowerCase();
+    const name = String(options?.name || "").trim().toLowerCase();
+    const model = String(options?.model || "").trim().toLowerCase();
+    const looksChatLike = name.includes("openai") || name.includes("gpt") || model.startsWith("gpt-") || model.startsWith("chatgpt") || model.length > 1 && model.startsWith("o") && /\d/.test(model[1]);
+    if (requestedFormat === OPENAI_RESPONSES_FORMAT && looksChatLike && !/\/responses$/i.test(baseUrl)) {
+      if (options?.stream) {
+        pushCandidate(OPENAI_CHAT_FORMAT);
+      }
+      pushCandidate(OPENAI_RESPONSES_FORMAT);
+      pushCandidate(OPENAI_CHAT_FORMAT);
+      return candidates.map(function (format, index) {
+        return {
+          format,
+          reason: index === 0 ? options?.stream ? "stream_prefer_chat_for_generic_v1" : "configured_format" : "responses_fallback_to_chat"
+        };
+      });
+    }
+    pushCandidate(requestedFormat);
+    return candidates.map(function (format) {
+      return {
+        format,
+        reason: "configured_format"
+      };
+    });
+  };
   function normalizeFormat(value) {
     const format = String(value || "").trim().toLowerCase();
     if (!format || format === ANTHROPIC_FORMAT) {
@@ -577,18 +611,18 @@
   }
   function buildHealthCheckCandidates(config) {
     const requestedFormat = normalizeFormat(config?.format);
-    const candidates = [requestedFormat];
     if (requestedFormat === LOCAL_CODEX_FORMAT) {
-      return candidates;
+      return [requestedFormat];
     }
-    const baseUrl = String(config?.baseUrl || "").trim().toLowerCase();
-    const model = String(config?.defaultModel || "").trim().toLowerCase();
-    const name = String(config?.name || "").trim().toLowerCase();
-    const looksChatLike = isLikelyChatLikeModel(model) || name.includes("openai") || name.includes("gpt");
-    if (requestedFormat === OPENAI_RESPONSES_FORMAT && looksChatLike && !/\/responses$/i.test(baseUrl)) {
-      candidates.push(OPENAI_CHAT_FORMAT);
-    }
-    return candidates;
+    return buildProviderFormatCandidates({
+      requestedFormat,
+      baseUrl: config?.baseUrl,
+      name: config?.name,
+      model: config?.defaultModel,
+      stream: false
+    }).map(function (candidate) {
+      return normalizeFormat(candidate?.format);
+    });
   }
   function buildHealthCheckBody(config, format) {
     const model = String(config?.defaultModel || "").trim();

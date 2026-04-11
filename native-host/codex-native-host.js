@@ -157,6 +157,8 @@ function startTask(message) {
   const child = spawn(command, args, createSpawnOptions(cwd));
   const summaryParts = [];
   let taskError = "";
+  const stdoutLines = [];
+  const stderrLines = [];
   tasks.set(taskId, child);
 
   child.on("error", error => {
@@ -171,6 +173,10 @@ function startTask(message) {
   streamLines(child.stdout, line => {
     if (!line.trim()) {
       return;
+    }
+    stdoutLines.push(line);
+    if (stdoutLines.length > 20) {
+      stdoutLines.shift();
     }
     try {
       const event = JSON.parse(line);
@@ -201,6 +207,10 @@ function startTask(message) {
     if (!line.trim()) {
       return;
     }
+    stderrLines.push(line);
+    if (stderrLines.length > 20) {
+      stderrLines.shift();
+    }
     sendMessage({
       type: "task_log",
       taskId,
@@ -211,11 +221,17 @@ function startTask(message) {
 
   child.on("close", code => {
     const exitCode = Number(code || 0);
+    const finalError = typeof localCodexHelpers.selectLocalCodexTaskError === "function" ? localCodexHelpers.selectLocalCodexTaskError({
+      taskError,
+      exitCode,
+      stdoutLines,
+      stderrLines
+    }) : taskError || (exitCode !== 0 ? `Codex task failed with exit code ${exitCode}.` : "");
     sendMessage({
       type: "task_done",
       taskId,
       exitCode,
-      error: taskError || (exitCode !== 0 ? `Codex task failed with exit code ${exitCode}.` : ""),
+      error: finalError,
       summary: summaryParts.filter(Boolean).join("\n\n")
     });
     tasks.delete(taskId);

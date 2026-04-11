@@ -18,6 +18,22 @@
   const extractLocalCodexEventError = typeof localCodexHelpers.extractLocalCodexEventError === "function" ? localCodexHelpers.extractLocalCodexEventError : function (event) {
     return typeof event?.message === "string" ? event.message.trim() : "";
   };
+  const buildProviderFormatCandidates = typeof localCodexHelpers.buildProviderFormatCandidates === "function" ? localCodexHelpers.buildProviderFormatCandidates : function (options) {
+    const requestedFormat = normalizeFormat(options?.requestedFormat);
+    const candidates = [{
+      format: requestedFormat,
+      reason: "configured_format"
+    }];
+    if (requestedFormat === OPENAI_RESPONSES_FORMAT && isChatLikeProvider(options, {
+      model: options?.model
+    }) && !/\/responses$/i.test(String(options?.baseUrl || ""))) {
+      candidates.push({
+        format: OPENAI_CHAT_FORMAT,
+        reason: "responses_fallback_to_chat"
+      });
+    }
+    return candidates;
+  };
   if (globalThis[PATCH_FLAG]) {
     return;
   }
@@ -276,18 +292,18 @@
     return name.includes("openai") || name.includes("gpt") || model.startsWith("gpt-") || model.startsWith("chatgpt") || isOpenAIOSeries(model);
   }
   function buildProviderRequestCandidates(config, body) {
-    const requestedFormat = normalizeFormat(config?.format);
-    const candidates = [{
-      format: requestedFormat,
-      reason: "configured_format"
-    }];
-    if (requestedFormat === OPENAI_RESPONSES_FORMAT && isChatLikeProvider(config, body) && !/\/responses$/i.test(String(config?.baseUrl || ""))) {
-      candidates.push({
-        format: OPENAI_CHAT_FORMAT,
-        reason: "responses_fallback_to_chat"
-      });
-    }
-    return candidates;
+    return buildProviderFormatCandidates({
+      requestedFormat: config?.format,
+      baseUrl: config?.baseUrl,
+      name: config?.name,
+      model: body?.model || config?.defaultModel,
+      stream: !!body?.stream
+    }).map(function (candidate) {
+      return {
+        format: normalizeFormat(candidate?.format),
+        reason: String(candidate?.reason || "configured_format")
+      };
+    });
   }
   function buildAnthropicUsageFromChat(usage) {
     const inputTokens = Number(usage?.prompt_tokens || 0);
