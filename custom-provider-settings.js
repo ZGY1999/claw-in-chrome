@@ -399,6 +399,10 @@
     }
   };
   const helpers = globalThis.CustomProviderModels || {};
+  const localCodexHelpers = globalThis.LocalCodexAdapterHelpers || {};
+  const isManagedLocalCodexProfile = typeof localCodexHelpers.isManagedLocalCodexProfile === "function" ? localCodexHelpers.isManagedLocalCodexProfile : function () {
+    return false;
+  };
   const DEFAULT_FORMAT = helpers.DEFAULT_FORMAT || "anthropic";
   const DEFAULT_CONTEXT_WINDOW = helpers.DEFAULT_CONTEXT_WINDOW || 200000;
   const MIN_CONTEXT_WINDOW = 20000;
@@ -2959,7 +2963,9 @@
     function renderProfileCards() {
       cleanupCardDropdowns();
       profileCardList.innerHTML = "";
-      const profiles = state.profiles.slice();
+      const profiles = state.profiles.filter(function (profile) {
+        return !isManagedLocalCodexProfile(profile);
+      });
       emptyState.hidden = profiles.length > 0;
       profiles.forEach(function (profile, index) {
         const isActive = profile.id === state.activeProfileId;

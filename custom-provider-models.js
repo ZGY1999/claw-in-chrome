@@ -389,6 +389,14 @@
     }
     return !!(String(profile.baseUrl || "").trim() && String(profile.apiKey || "").trim() && String(profile.defaultModel || "").trim());
   }
+  function isUsableLegacyConfig(raw) {
+    const config = normalizeConfig(raw);
+    const normalizedFormat = normalizeFormat(config.format);
+    if (normalizedFormat === LOCAL_CODEX_FORMAT) {
+      return false;
+    }
+    return !!(config.baseUrl && config.apiKey && config.defaultModel);
+  }
   function projectProfileToConfig(profile) {
     if (!profile) {
       return createEmptyConfig();
@@ -492,6 +500,14 @@
     if (hadLegacyLocalCodexProfiles) {
       profiles = removeLegacyLocalCodexProfiles(profiles);
       activeProfileId = resolveActiveProfileId(profiles, activeProfileId);
+      migrated = true;
+    }
+    if (!profiles.some(isUsableProviderProfile) && isUsableLegacyConfig(stored[LEGACY_STORAGE_KEY])) {
+      const legacyProfile = normalizeProfile(stored[LEGACY_STORAGE_KEY]);
+      profiles = [legacyProfile].concat(profiles.filter(function (profile) {
+        return stableSerialize(projectProfileToConfig(profile)) !== stableSerialize(projectProfileToConfig(legacyProfile));
+      }));
+      activeProfileId = legacyProfile.id;
       migrated = true;
     }
     const activeProfile = profiles.find(function (profile) {

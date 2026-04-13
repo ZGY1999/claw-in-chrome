@@ -8,7 +8,8 @@
     defaultCwd: "",
     defaultModel: "",
     sandbox: "workspace-write",
-    ephemeral: true
+    ephemeral: true,
+    previousActiveProfileId: ""
   };
   const ROOT_ID = "cb-options-root";
   const localCodexHelpers = globalThis.LocalCodexAdapterHelpers || {};
@@ -53,7 +54,8 @@
       defaultCwd: String(source.defaultCwd || "").trim(),
       defaultModel: String(source.defaultModel || "").trim(),
       sandbox: String(source.sandbox || DEFAULTS.sandbox).trim() || DEFAULTS.sandbox,
-      ephemeral: source.ephemeral !== false
+      ephemeral: source.ephemeral !== false,
+      previousActiveProfileId: String(source.previousActiveProfileId || "").trim()
     };
   }
 
@@ -66,21 +68,50 @@
   async function syncCustomProvider(next) {
     const helpers = globalThis.CustomProviderModels;
     if (!helpers || typeof helpers.readProviderStoreState !== "function" || typeof helpers.persistProviderStoreState !== "function") {
-      return;
+      return next;
     }
     const currentState = await helpers.readProviderStoreState();
     const filteredProfiles = removeManagedLocalCodexProfiles(currentState.profiles);
-    const nextActiveProfileId = filteredProfiles.some(function (profile) {
+    const previousActiveProfileId = filteredProfiles.some(function (profile) {
       return profile.id === currentState.activeProfileId;
-    }) ? currentState.activeProfileId : filteredProfiles[0]?.id || null;
-    if (filteredProfiles.length !== currentState.profiles.length || nextActiveProfileId !== currentState.activeProfileId) {
+    }) ? currentState.activeProfileId : filteredProfiles[0]?.id || "";
+    if (next.enabled) {
+      const managedProfiles = upsertManagedLocalCodexProfile(filteredProfiles, {
+        name: "Local Codex",
+        format: "local_codex",
+        baseUrl: "https://local.codex",
+        apiKey: "local-codex",
+        defaultModel: String(next.defaultModel || "").trim() || "gpt-5.4",
+        reasoningEffort: "medium",
+        contextWindow: 200000,
+        notes: ""
+      });
+      await helpers.persistProviderStoreState({
+        profiles: managedProfiles,
+        activeProfileId: MANAGED_LOCAL_CODEX_PROFILE_ID,
+        originalApiKey: currentState.originalApiKey,
+        currentApiKey: currentState.currentApiKey
+      });
+      return {
+        ...next,
+        previousActiveProfileId: String(next.previousActiveProfileId || previousActiveProfileId || "").trim()
+      };
+    }
+    const restoreActiveProfileId = filteredProfiles.some(function (profile) {
+      return profile.id === next.previousActiveProfileId;
+    }) ? next.previousActiveProfileId : filteredProfiles[0]?.id || null;
+    if (filteredProfiles.length !== currentState.profiles.length || restoreActiveProfileId !== currentState.activeProfileId) {
       await helpers.persistProviderStoreState({
         profiles: filteredProfiles,
-        activeProfileId: nextActiveProfileId,
+        activeProfileId: restoreActiveProfileId,
         originalApiKey: currentState.originalApiKey,
         currentApiKey: currentState.currentApiKey
       });
     }
+    return {
+      ...next,
+      previousActiveProfileId: ""
+    };
   }
 
   function setStatus(message, tone) {
@@ -123,6 +154,7 @@
 
   function writeForm(config) {
     refs.toggle.dataset.enabled = config.enabled ? "true" : "false";
+    refs.toggle.dataset.previousActiveProfileId = String(config.previousActiveProfileId || "").trim();
     refs.enabledValue.textContent = config.enabled ? "Enabled" : "Disabled";
     refs.hostName.value = config.hostName || "";
     refs.defaultCwd.value = config.defaultCwd || "";
@@ -139,7 +171,8 @@
       defaultCwd: String(refs.defaultCwd.value || "").trim(),
       defaultModel: String(refs.defaultModel.value || "").trim(),
       sandbox: String(refs.sandbox.value || DEFAULTS.sandbox).trim() || DEFAULTS.sandbox,
-      ephemeral: refs.ephemeral.dataset.enabled === "true"
+      ephemeral: refs.ephemeral.dataset.enabled === "true",
+      previousActiveProfileId: String(refs.toggle.dataset.previousActiveProfileId || "").trim()
     };
   }
 
@@ -172,9 +205,8 @@
   }
 
   async function saveForm() {
-    const next = readForm();
+    const next = await syncCustomProvider(readForm());
     await writeConfig(next);
-    await syncCustomProvider(next);
     setStatus("Saved. Reloading local bridge status...", "success");
     await refreshStatus();
   }
